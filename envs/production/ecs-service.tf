@@ -29,8 +29,11 @@ resource "aws_ecs_service" "reqsai_api" {
   # counting health checks, otherwise the service can flap on first deploy.
   depends_on = [aws_lb_listener.http]
 
-  # lifecycle.ignore_changes on task_definition is added once CI (reqsai-api's
-  # deploy.yml) actually starts deploying — temporarily removed so Terraform
-  # itself can push new task definition revisions to the service while we're
-  # still validating the deployment manually.
+  lifecycle {
+    # reqsai-api's deploy.yml now updates the running service to a new task
+    # definition revision on every push. Without this, `terraform apply`
+    # would see that drift and roll the service back to whatever revision
+    # Terraform itself last created.
+    ignore_changes = [task_definition]
+  }
 }

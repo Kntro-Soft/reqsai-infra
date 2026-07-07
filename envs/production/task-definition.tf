@@ -89,7 +89,12 @@ resource "aws_ecs_task_definition" "reqsai_api" {
     }
   ])
 
-  # lifecycle.ignore_changes on container_definitions is added once CI
-  # (reqsai-api's deploy.yml) actually starts registering revisions —
-  # temporarily removed so this edit (enabling Swagger) actually applies.
+  lifecycle {
+    # reqsai-api's deploy.yml (now wired up, see ecs/task-definition.json
+    # in that repo) registers a new revision on every push with the fresh
+    # image tag. Without this, the next `terraform apply` would see that
+    # drift and try to revert the container definition back to whatever
+    # var.image_tag was last set to here, undoing CI's deployment.
+    ignore_changes = [container_definitions]
+  }
 }
