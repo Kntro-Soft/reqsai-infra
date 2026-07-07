@@ -77,3 +77,13 @@ output "web_url" {
   description = "Public HTTPS URL of the deployed frontend."
   value       = "https://${aws_cloudfront_distribution.web.domain_name}"
 }
+
+output "github_actions_api_role_arn" {
+  description = "Set as AWS_DEPLOY_ROLE_ARN in reqsai-api's GitHub Actions repo variables."
+  value       = aws_iam_role.github_actions_api.arn
+}
+
+output "github_actions_web_role_arn" {
+  description = "Set as AWS_DEPLOY_ROLE_ARN in reqsai-web's GitHub Actions repo variables."
+  value       = aws_iam_role.github_actions_web.arn
+}
