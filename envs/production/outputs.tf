@@ -27,3 +27,23 @@ output "alb_dns_name" {
   description = "Public DNS name of the load balancer — where reqsai-api will be reachable once the ECS service exists (http:// only, no custom domain/TLS yet)."
   value       = aws_lb.reqsai_api.dns_name
 }
+
+output "rds_address" {
+  description = "RDS endpoint host — maps to reqsai-api's DB_HOST env var."
+  value       = aws_db_instance.reqsai.address
+}
+
+output "rds_port" {
+  description = "RDS port — maps to reqsai-api's DB_PORT env var."
+  value       = aws_db_instance.reqsai.port
+}
+
+output "rds_db_name" {
+  description = "Database name — maps to reqsai-api's DB_NAME env var."
+  value       = aws_db_instance.reqsai.db_name
+}
+
+output "rds_master_user_secret_arn" {
+  description = "Secrets Manager ARN holding the RDS master password (auto-created by RDS). The ECS task definition will reference this directly instead of reading the password into Terraform state."
+  value       = aws_db_instance.reqsai.master_user_secret[0].secret_arn
+}
