@@ -62,3 +62,18 @@ output "ai_secret_arn" {
   description = "ARN of the empty AI API keys secret — populate with `aws secretsmanager put-secret-value` (see README)."
   value       = aws_secretsmanager_secret.ai.arn
 }
+
+output "web_bucket_name" {
+  description = "S3 bucket name — set as the S3_BUCKET value in reqsai-web's GitHub Actions variables."
+  value       = aws_s3_bucket.web.id
+}
+
+output "web_cloudfront_distribution_id" {
+  description = "CloudFront distribution id — set as the CLOUDFRONT_DISTRIBUTION_ID value in reqsai-web's GitHub Actions variables (used to invalidate the cache on deploy)."
+  value       = aws_cloudfront_distribution.web.id
+}
+
+output "web_url" {
+  description = "Public HTTPS URL of the deployed frontend."
+  value       = "https://${aws_cloudfront_distribution.web.domain_name}"
+}
