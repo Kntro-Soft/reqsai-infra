@@ -22,3 +22,8 @@ output "ecr_repository_url" {
   description = "Full ECR repository URL (registry + repo name), for reference. reqsai-api's deploy.yml only needs the repo name (\"reqsai-api\") as its ECR_REPOSITORY variable — the registry host is resolved separately by the ECR login step."
   value       = aws_ecr_repository.reqsai_api.repository_url
 }
+
+output "alb_dns_name" {
+  description = "Public DNS name of the load balancer — where reqsai-api will be reachable once the ECS service exists (http:// only, no custom domain/TLS yet)."
+  value       = aws_lb.reqsai_api.dns_name
+}
