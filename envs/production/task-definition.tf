@@ -1,18 +1,28 @@
-# 0.25 vCPU / 0.5 GB, as decided for cost. Fargate cpu/memory are in
-# specific paired units: "256" = 0.25 vCPU, "512" = 0.5 GB.
+# 1 vCPU / 2 GB — the realistic minimum for a Spring Boot web app on
+# Fargate (0.25/0.5 caused CPU throttling severe enough that the app never
+# finished booting before the ALB health check killed the task). Fargate
+# cpu/memory are in specific paired units: "1024" = 1 vCPU, "2048" = 2 GB.
 resource "aws_ecs_task_definition" "reqsai_api" {
   family                   = "reqsai-api"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc" # required by Fargate: each task gets its own ENI/IP
-  cpu                      = "256"
-  memory                   = "512"
+  cpu                      = "1024"
+  memory                   = "2048"
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
+
+  # Explicit instead of relying on Fargate's implicit default, to rule out
+  # any ambiguity while debugging the "no descriptor matching platform"
+  # image pull error.
+  runtime_platform {
+    cpu_architecture        = "X86_64"
+    operating_system_family = "LINUX"
+  }
 
   container_definitions = jsonencode([
     {
       name      = "reqsai-api"
-      image     = "${aws_ecr_repository.reqsai_api.repository_url}:latest"
+      image     = "${aws_ecr_repository.reqsai_api.repository_url}:${var.image_tag}"
       essential = true
 
       portMappings = [
@@ -38,6 +48,16 @@ resource "aws_ecs_task_definition" "reqsai_api" {
         { name = "STT_STREAMING_PROVIDER", value = "deepgram" },
         { name = "GENERATION_PROVIDER", value = "openai" },
         { name = "EMBEDDING_PROVIDER", value = "openai" },
+        # Spring AI's own autoconfiguration selectors (distinct from
+        # GENERATION_PROVIDER/EMBEDDING_PROVIDER above, which only control
+        # this app's internal routing). Without them, spring.ai.model.chat
+        # defaults to "none" but Spring AI still tried to instantiate the
+        # Google GenAI client present on the classpath and failed for lack
+        # of a Gemini API key — this selects OpenAI explicitly instead.
+        { name = "SPRING_AI_MODEL_CHAT", value = "openai" },
+        { name = "SPRING_AI_MODEL_EMBEDDING", value = "openai" },
+        { name = "SPRINGDOC_API_DOCS_ENABLED", value = "true" },
+        { name = "SPRINGDOC_SWAGGER_UI_ENABLED", value = "true" },
       ]
 
       # Sensitive values — injected by ECS from Secrets Manager at container
@@ -64,12 +84,7 @@ resource "aws_ecs_task_definition" "reqsai_api" {
     }
   ])
 
-  lifecycle {
-    # reqsai-api's deploy.yml registers a new task definition revision on
-    # every push (with the freshly built image tag). Without this, the
-    # next `terraform apply` would see that drift and try to revert the
-    # container definition back to the ":latest" placeholder below,
-    # undoing whatever CI just deployed.
-    ignore_changes = [container_definitions]
-  }
+  # lifecycle.ignore_changes on container_definitions is added once CI
+  # (reqsai-api's deploy.yml) actually starts registering revisions —
+  # temporarily removed so this edit (enabling Swagger) actually applies.
 }

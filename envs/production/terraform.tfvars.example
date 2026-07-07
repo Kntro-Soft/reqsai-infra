@@ -1,0 +1,1 @@
+image_tag = "<git-short-sha-of-the-image-you-pushed-to-ECR>"

@@ -21,3 +21,8 @@ variable "frontend_url" {
   type        = string
   default     = "https://TODO-set-frontend-url-once-deployed.example.com"
 }
+
+variable "image_tag" {
+  description = "Tag of the reqsai-api image in ECR to deploy. ECR tags are immutable, so each new build needs a new tag (e.g. the git short SHA) — update this and re-apply to roll out a manually-built image. Once CI (deploy.yml) owns deployments, this stops being used (task definition updates go through ECS directly, outside Terraform)."
+  type        = string
+}
