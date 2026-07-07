@@ -1,0 +1,3 @@
+aws_region        = "us-east-1"
+state_bucket_name = "reqsai-terraform-state-<your-aws-account-id>"
+lock_table_name   = "reqsai-terraform-locks"
