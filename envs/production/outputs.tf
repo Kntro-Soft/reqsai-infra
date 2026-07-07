@@ -1,5 +1,5 @@
 output "vpc_id" {
-  description = "ID of the dev VPC, referenced by ECS/RDS/ALB resources added later."
+  description = "ID of the production VPC, referenced by ECS/RDS/ALB resources added later."
   value       = module.vpc.vpc_id
 }
 
