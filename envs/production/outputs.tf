@@ -47,3 +47,18 @@ output "rds_master_user_secret_arn" {
   description = "Secrets Manager ARN holding the RDS master password (auto-created by RDS). The ECS task definition will reference this directly instead of reading the password into Terraform state."
   value       = aws_db_instance.reqsai.master_user_secret[0].secret_arn
 }
+
+output "jwt_secret_arn" {
+  description = "ARN of the empty JWT keys secret — populate with `aws secretsmanager put-secret-value` (see README)."
+  value       = aws_secretsmanager_secret.jwt.arn
+}
+
+output "smtp_secret_arn" {
+  description = "ARN of the empty SMTP credentials secret — populate with `aws secretsmanager put-secret-value` (see README)."
+  value       = aws_secretsmanager_secret.smtp.arn
+}
+
+output "ai_secret_arn" {
+  description = "ARN of the empty AI API keys secret — populate with `aws secretsmanager put-secret-value` (see README)."
+  value       = aws_secretsmanager_secret.ai.arn
+}
