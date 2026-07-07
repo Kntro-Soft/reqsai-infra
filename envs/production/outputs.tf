@@ -17,3 +17,8 @@ output "database_subnets" {
   description = "Database subnet ids — for RDS."
   value       = module.vpc.database_subnets
 }
+
+output "ecr_repository_url" {
+  description = "Full ECR repository URL (registry + repo name), for reference. reqsai-api's deploy.yml only needs the repo name (\"reqsai-api\") as its ECR_REPOSITORY variable — the registry host is resolved separately by the ECR login step."
+  value       = aws_ecr_repository.reqsai_api.repository_url
+}
