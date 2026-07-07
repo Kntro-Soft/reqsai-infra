@@ -48,6 +48,23 @@ resource "aws_cloudfront_distribution" "web" {
     origin_access_control_id = aws_cloudfront_origin_access_control.web.id
   }
 
+  # reqsai-web's Angular code calls relative /api and /ws paths (mirroring
+  # its own dev proxy.conf.js) instead of reading environment.apiUrl. Rather
+  # than changing that app, CloudFront fronts the backend under the same
+  # origin so those relative calls land on the real API — same shape as the
+  # dev proxy, just at the CDN layer.
+  origin {
+    domain_name = aws_lb.reqsai_api.dns_name
+    origin_id   = "alb-backend"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "http-only" # no ACM cert/HTTPS listener on the ALB yet
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
   default_cache_behavior {
     target_origin_id       = "s3-web"
     viewer_protocol_policy = "redirect-to-https"
@@ -56,6 +73,31 @@ resource "aws_cloudfront_distribution" "web" {
     compress               = true
     # AWS managed "CachingOptimized" policy — long cache, gzip/brotli aware.
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+  }
+
+  # API calls — never cached, all methods, every header/cookie/query string
+  # forwarded through untouched (AWS managed "AllViewer" origin request
+  # policy) so auth headers and JSON bodies reach the backend intact.
+  ordered_cache_behavior {
+    path_pattern             = "/api/*"
+    target_origin_id         = "alb-backend"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    compress                 = true
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+    origin_request_policy_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer
+  }
+
+  # WebSocket (STOMP) handshake and traffic — same treatment as /api/*.
+  ordered_cache_behavior {
+    path_pattern             = "/ws/*"
+    target_origin_id         = "alb-backend"
+    viewer_protocol_policy   = "redirect-to-https"
+    allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods           = ["GET", "HEAD"]
+    cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
+    origin_request_policy_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer
   }
 
   # SPA client-side routing: any path not found as a literal S3 object
