@@ -83,6 +83,11 @@ output "github_actions_api_role_arn" {
   value       = aws_iam_role.github_actions_api.arn
 }
 
+output "dns_nameservers" {
+  description = "Set these 4 as reqsai.tech's nameservers at Tech Domains (the registrar) — this is the one manual step, everything else is Terraform-managed."
+  value       = aws_route53_zone.root.name_servers
+}
+
 output "github_actions_web_role_arn" {
   description = "Set as AWS_DEPLOY_ROLE_ARN in reqsai-web's GitHub Actions repo variables."
   value       = aws_iam_role.github_actions_web.arn
