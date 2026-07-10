@@ -29,13 +29,29 @@ resource "aws_lb_target_group" "reqsai_api" {
   }
 }
 
-# HTTP only for now — no ACM certificate/custom domain yet. Add an HTTPS
-# listener (port 443) once a domain is pointed at the ALB, and switch this
-# one to redirect HTTP -> HTTPS instead of forwarding directly.
+# Redirects to HTTPS now that a real certificate exists — no traffic is
+# ever forwarded to the app in plaintext from the internet.
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.reqsai_api.arn
   port              = 80
   protocol          = "HTTP"
+
+  default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.reqsai_api.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = aws_acm_certificate_validation.api.certificate_arn
 
   default_action {
     type             = "forward"

@@ -60,7 +60,7 @@ resource "aws_cloudfront_distribution" "web" {
     custom_origin_config {
       http_port              = 80
       https_port             = 443
-      origin_protocol_policy = "http-only" # no ACM cert/HTTPS listener on the ALB yet
+      origin_protocol_policy = "https-only" # ALB now has a real cert (api.tamci.app)
       origin_ssl_protocols   = ["TLSv1.2"]
     }
   }
@@ -116,6 +116,8 @@ resource "aws_cloudfront_distribution" "web" {
     response_page_path = "/index.html"
   }
 
+  aliases = ["app.tamci.app"]
+
   restrictions {
     geo_restriction {
       restriction_type = "none"
@@ -123,9 +125,9 @@ resource "aws_cloudfront_distribution" "web" {
   }
 
   viewer_certificate {
-    # No custom domain yet — CloudFront's own *.cloudfront.net cert, HTTPS
-    # included at no extra cost. Switch to an ACM cert + custom domain later.
-    cloudfront_default_certificate = true
+    acm_certificate_arn      = aws_acm_certificate_validation.web.certificate_arn
+    ssl_support_method       = "sni-only"
+    minimum_protocol_version = "TLSv1.2_2021"
   }
 }
 
