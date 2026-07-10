@@ -18,3 +18,8 @@ resource "aws_secretsmanager_secret" "ai" {
   name        = "reqsai/${var.environment}/ai"
   description = "Third-party AI API keys for reqsai-api (deepgram_api_key, openai_api_key)."
 }
+
+resource "aws_secretsmanager_secret" "jira" {
+  name        = "reqsai/${var.environment}/jira"
+  description = "Jira integration secrets for reqsai-api (encryption_key, oauth_client_id, oauth_client_secret, oauth_state_secret)."
+}
