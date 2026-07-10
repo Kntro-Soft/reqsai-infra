@@ -23,3 +23,8 @@ resource "aws_secretsmanager_secret" "jira" {
   name        = "reqsai/${var.environment}/jira"
   description = "Jira integration secrets for reqsai-api (encryption_key, oauth_client_id, oauth_client_secret, oauth_state_secret)."
 }
+
+resource "aws_secretsmanager_secret" "stripe" {
+  name        = "reqsai/${var.environment}/stripe"
+  description = "Stripe payment gateway credentials for reqsai-api (api_key, webhook_secret)."
+}
