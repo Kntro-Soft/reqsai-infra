@@ -42,11 +42,6 @@ resource "aws_ecs_task_definition" "reqsai_api" {
         # WS_ALLOWED_ORIGINS inherits this same value unless set separately
         # (application.yml: ${WS_ALLOWED_ORIGINS:${CORS_ALLOWED_ORIGINS:...}}).
         { name = "CORS_ALLOWED_ORIGINS", value = "https://app.tamci.app" },
-        # Derived from the same frontend domain as FRONTEND_URL above (not a
-        # separate literal) so it can never drift out of sync with it. Must
-        # match the callback URL registered in the Atlassian app console
-        # byte-for-byte, or the OAuth flow is rejected.
-        { name = "JIRA_OAUTH_CALLBACK_URL", value = "https://app.tamci.app/settings/integrations/jira/callback" },
         { name = "DB_HOST", value = aws_db_instance.reqsai.address },
         { name = "DB_PORT", value = tostring(aws_db_instance.reqsai.port) },
         { name = "DB_NAME", value = aws_db_instance.reqsai.db_name },
