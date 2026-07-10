@@ -29,6 +29,7 @@ data "aws_iam_policy_document" "ecs_task_execution_secrets" {
       aws_secretsmanager_secret.smtp.arn,
       aws_secretsmanager_secret.ai.arn,
       aws_secretsmanager_secret.jira.arn,
+      aws_secretsmanager_secret.stripe.arn,
       aws_db_instance.reqsai.master_user_secret[0].secret_arn,
     ]
   }

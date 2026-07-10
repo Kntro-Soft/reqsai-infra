@@ -42,6 +42,14 @@ resource "aws_ecs_task_definition" "reqsai_api" {
         # WS_ALLOWED_ORIGINS inherits this same value unless set separately
         # (application.yml: ${WS_ALLOWED_ORIGINS:${CORS_ALLOWED_ORIGINS:...}}).
         { name = "CORS_ALLOWED_ORIGINS", value = "https://app.tamci.app" },
+        # Same value as FRONTEND_URL — Stripe's checkout success/cancel URLs
+        # derive from this instead of a separate literal
+        # (application.yml: ${STRIPE_SUCCESS_URL:${WEB_APP_URL:...}/billing/success}).
+        { name = "WEB_APP_URL", value = "https://app.tamci.app" },
+        { name = "BILLING_PAYMENT_PROVIDER", value = "stripe" },
+        { name = "BILLING_CURRENCY", value = "USD" },
+        { name = "BILLING_PRO_STRIPE_PRICE_ID", value = "price_1TrSiGDRW48WB7COzoE13Ius" },
+        { name = "BILLING_ENTERPRISE_STRIPE_PRICE_ID", value = "price_1TrSikDRW48WB7COSEMwH3xf" },
         { name = "DB_HOST", value = aws_db_instance.reqsai.address },
         { name = "DB_PORT", value = tostring(aws_db_instance.reqsai.port) },
         { name = "DB_NAME", value = aws_db_instance.reqsai.db_name },
@@ -84,6 +92,8 @@ resource "aws_ecs_task_definition" "reqsai_api" {
         { name = "JIRA_OAUTH_CLIENT_ID", valueFrom = "${aws_secretsmanager_secret.jira.arn}:oauth_client_id::" },
         { name = "JIRA_OAUTH_CLIENT_SECRET", valueFrom = "${aws_secretsmanager_secret.jira.arn}:oauth_client_secret::" },
         { name = "JIRA_OAUTH_STATE_SECRET", valueFrom = "${aws_secretsmanager_secret.jira.arn}:oauth_state_secret::" },
+        { name = "STRIPE_API_KEY", valueFrom = "${aws_secretsmanager_secret.stripe.arn}:api_key::" },
+        { name = "STRIPE_WEBHOOK_SECRET", valueFrom = "${aws_secretsmanager_secret.stripe.arn}:webhook_secret::" },
       ]
 
       logConfiguration = {
