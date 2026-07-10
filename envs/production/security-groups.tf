@@ -1,27 +1,33 @@
-# --- ALB: the only piece reachable from the public internet ---
+# AWS-managed, auto-updated list of CloudFront's own outbound IP ranges —
+# using it instead of hardcoded CIDRs means this never goes stale as AWS
+# adds/rotates CloudFront IPs.
+data "aws_ec2_managed_prefix_list" "cloudfront" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
+# --- ALB: reachable only from CloudFront, not the raw internet ---
+# (description left unchanged on purpose: it's immutable in AWS, so editing
+# it would force-replace this security group and briefly disrupt the live ALB)
 resource "aws_security_group" "alb" {
   name        = "reqsai-${var.environment}-alb"
   description = "Allows inbound HTTP/HTTPS from the internet to the ALB"
   vpc_id      = module.vpc.vpc_id
 }
 
-resource "aws_security_group_rule" "alb_ingress_http" {
-  type              = "ingress"
-  description       = "HTTP from anywhere"
-  from_port         = 80
-  to_port           = 80
-  protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
-  security_group_id = aws_security_group.alb.id
-}
+# No port-80 ingress rule: CloudFront's origin config (frontend.tf) is
+# https-only, so it never connects to the ALB over port 80 — the listener's
+# HTTP->HTTPS redirect (alb.tf) is unreachable dead config now, harmless to
+# leave in place, but no rule is needed to allow traffic that never arrives.
+# (Also avoids the CloudFront prefix list's ~50+ entries pushing this
+# security group over AWS's default 60-rules-per-SG quota.)
 
 resource "aws_security_group_rule" "alb_ingress_https" {
   type              = "ingress"
-  description       = "HTTPS from anywhere"
+  description       = "HTTPS from CloudFront only"
   from_port         = 443
   to_port           = 443
   protocol          = "tcp"
-  cidr_blocks       = ["0.0.0.0/0"]
+  prefix_list_ids   = [data.aws_ec2_managed_prefix_list.cloudfront.id]
   security_group_id = aws_security_group.alb.id
 }
 
