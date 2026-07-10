@@ -54,7 +54,12 @@ resource "aws_cloudfront_distribution" "web" {
   # origin so those relative calls land on the real API — same shape as the
   # dev proxy, just at the CDN layer.
   origin {
-    domain_name = aws_lb.reqsai_api.dns_name
+    # Must be api.tamci.app, not the raw ALB DNS name: CloudFront uses this
+    # value as the TLS SNI hostname when connecting to the origin, and the
+    # ALB's HTTPS listener only has a certificate for api.tamci.app — SNI
+    # for the raw *.elb.amazonaws.com name matches no certificate, so the
+    # TLS handshake fails and CloudFront returns 502.
+    domain_name = aws_route53_record.api.name
     origin_id   = "alb-backend"
 
     custom_origin_config {
