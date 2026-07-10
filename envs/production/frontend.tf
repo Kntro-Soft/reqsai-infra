@@ -37,6 +37,17 @@ resource "aws_cloudfront_origin_access_control" "web" {
   signing_protocol                  = "sigv4"
 }
 
+# Blocks direct access via the default *.cloudfront.net domain — the
+# equivalent, at the CloudFront layer, of the ALB's security-group lockdown
+# to CloudFront-only traffic (there's no security group for CloudFront
+# itself, since it isn't in a VPC).
+resource "aws_cloudfront_function" "block_default_domain" {
+  name    = "reqsai-${var.environment}-block-default-domain"
+  runtime = "cloudfront-js-2.0"
+  publish = true
+  code    = file("${path.module}/cloudfront-functions/block-default-domain.js")
+}
+
 resource "aws_cloudfront_distribution" "web" {
   enabled             = true
   default_root_object = "index.html"
@@ -78,6 +89,11 @@ resource "aws_cloudfront_distribution" "web" {
     compress               = true
     # AWS managed "CachingOptimized" policy — long cache, gzip/brotli aware.
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.block_default_domain.arn
+    }
   }
 
   # API calls — never cached, all methods, every header/cookie/query string
@@ -92,6 +108,11 @@ resource "aws_cloudfront_distribution" "web" {
     compress                 = true
     cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
     origin_request_policy_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.block_default_domain.arn
+    }
   }
 
   # WebSocket (STOMP) handshake and traffic — same treatment as /api/*.
@@ -103,6 +124,11 @@ resource "aws_cloudfront_distribution" "web" {
     cached_methods           = ["GET", "HEAD"]
     cache_policy_id          = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad" # CachingDisabled
     origin_request_policy_id = "216adef6-5c7f-47e4-b989-5492eafa07d3" # AllViewer
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.block_default_domain.arn
+    }
   }
 
   # SPA client-side routing: any path not found as a literal S3 object
