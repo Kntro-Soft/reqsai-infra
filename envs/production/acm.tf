@@ -1,6 +1,6 @@
-# --- api.reqsai.tech (ALB / backend) ---
+# --- api.tamci.app (ALB / backend) ---
 resource "aws_acm_certificate" "api" {
-  domain_name       = "api.reqsai.tech"
+  domain_name       = "api.tamci.app"
   validation_method = "DNS"
 
   lifecycle {
@@ -30,11 +30,11 @@ resource "aws_acm_certificate_validation" "api" {
   validation_record_fqdns = [for r in aws_route53_record.api_cert_validation : r.fqdn]
 }
 
-# --- app.reqsai.tech (CloudFront / frontend) ---
+# --- app.tamci.app (CloudFront / frontend) ---
 # CloudFront requires its certificate in us-east-1 specifically — this
 # module's own provider is already us-east-1, so no aliased provider needed.
 resource "aws_acm_certificate" "web" {
-  domain_name       = "app.reqsai.tech"
+  domain_name       = "app.tamci.app"
   validation_method = "DNS"
 
   lifecycle {

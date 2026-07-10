@@ -84,7 +84,7 @@ output "github_actions_api_role_arn" {
 }
 
 output "dns_nameservers" {
-  description = "Set these 4 as reqsai.tech's nameservers at Tech Domains (the registrar) — this is the one manual step, everything else is Terraform-managed."
+  description = "Set these 4 as tamci.app's nameservers at name.com (the registrar) — this is the one manual step, everything else is Terraform-managed."
   value       = aws_route53_zone.root.name_servers
 }
 
