@@ -35,13 +35,13 @@ resource "aws_ecs_task_definition" "reqsai_api" {
       # Plain, non-sensitive config — safe to see in the task definition JSON.
       environment = [
         { name = "SPRING_PROFILES_ACTIVE", value = "prod" },
-        { name = "APP_URL", value = "http://${aws_lb.reqsai_api.dns_name}" },
-        { name = "FRONTEND_URL", value = "https://${aws_cloudfront_distribution.web.domain_name}" },
+        { name = "APP_URL", value = "https://api.tamci.app" },
+        { name = "FRONTEND_URL", value = "https://app.tamci.app" },
         # Without this, the browser blocks the deployed frontend's calls to
         # the API under CORS (default is http://localhost:4200, dev only).
         # WS_ALLOWED_ORIGINS inherits this same value unless set separately
         # (application.yml: ${WS_ALLOWED_ORIGINS:${CORS_ALLOWED_ORIGINS:...}}).
-        { name = "CORS_ALLOWED_ORIGINS", value = "https://${aws_cloudfront_distribution.web.domain_name}" },
+        { name = "CORS_ALLOWED_ORIGINS", value = "https://app.tamci.app" },
         { name = "DB_HOST", value = aws_db_instance.reqsai.address },
         { name = "DB_PORT", value = tostring(aws_db_instance.reqsai.port) },
         { name = "DB_NAME", value = aws_db_instance.reqsai.db_name },
