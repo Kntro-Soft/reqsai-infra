@@ -74,6 +74,10 @@ resource "aws_ecs_task_definition" "reqsai_api" {
         { name = "JWT_PUBLIC_KEY_PEM", valueFrom = "${aws_secretsmanager_secret.jwt.arn}:public_key_pem::" },
         { name = "MAIL_USERNAME", valueFrom = "${aws_secretsmanager_secret.smtp.arn}:username::" },
         { name = "MAIL_PASSWORD", valueFrom = "${aws_secretsmanager_secret.smtp.arn}:password::" },
+        # Gmail requires the From address to match the authenticated account
+        # (no alias configured) — read from the same secret key as
+        # MAIL_USERNAME so rotating credentials never needs a code change.
+        { name = "MAIL_FROM", valueFrom = "${aws_secretsmanager_secret.smtp.arn}:username::" },
         { name = "DEEPGRAM_API_KEY", valueFrom = "${aws_secretsmanager_secret.ai.arn}:deepgram_api_key::" },
         { name = "OPENAI_API_KEY", valueFrom = "${aws_secretsmanager_secret.ai.arn}:openai_api_key::" },
       ]
