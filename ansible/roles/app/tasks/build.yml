@@ -1,0 +1,52 @@
+- name: Install git
+  ansible.builtin.apt:
+    name: git
+    state: present
+
+- name: Check out the application sources
+  ansible.builtin.git:
+    repo: "{{ app_git_url }}"
+    version: "{{ item.version }}"
+    dest: "{{ app_dir }}/src/{{ item.name }}"
+    depth: 1
+    force: true
+  vars:
+    app_git_url: >-
+      {{ item.repo | regex_replace('^https://', 'https://x-access-token:' ~ app_git_token ~ '@')
+         if app_git_token | length > 0 else item.repo }}
+  loop:
+    - { name: reqsai-api, repo: "{{ app_api_git_repo }}", version: "{{ app_api_git_version }}" }
+    - { name: reqsai-web, repo: "{{ app_web_git_repo }}", version: "{{ app_web_git_version }}" }
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: "{{ app_git_token | length > 0 }}"
+
+- name: Inspect the current Compose project
+  ansible.builtin.stat:
+    path: "{{ app_dir }}/compose.yaml"
+  register: app_compose_file
+
+- name: Stop the API to free memory for the build
+  ansible.builtin.command:
+    cmd: docker compose stop api
+    chdir: "{{ app_dir }}"
+  changed_when: true
+  failed_when: false
+  when: app_compose_file.stat.exists
+
+- name: Build the images
+  ansible.builtin.command:
+    cmd: docker build --pull --tag {{ item.tag }} {{ app_dir }}/src/{{ item.name }}
+  loop:
+    - { name: reqsai-api, tag: reqsai-api:local }
+    - { name: reqsai-web, tag: reqsai-web:local }
+  loop_control:
+    label: "{{ item.tag }}"
+  async: "{{ app_build_timeout }}"
+  poll: 30
+  changed_when: true
+
+- name: Remove the build cache
+  ansible.builtin.command:
+    cmd: docker builder prune --force
+  changed_when: true

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+source="${1:?usage: reqsai-restore <path/to/file.dump | s3://bucket/key.dump>}"
+
+cd {{ backup_app_dir }}
+
+if [[ "${source}" == s3://* ]]; then
+  dump="{{ backup_dir }}/restore-$(date -u +%Y%m%dT%H%M%SZ).dump"
+  /snap/bin/aws s3 cp "${source}" "${dump}" --region {{ backup_aws_region }} --only-show-errors
+else
+  dump="${source}"
+fi
+
+[[ -s "${dump}" ]] || { echo "Dump not found or empty: ${dump}" >&2; exit 1; }
+
+docker compose stop api
+docker compose exec -T db sh -c 'dropdb --username="$POSTGRES_USER" --if-exists --force "$POSTGRES_DB" && createdb --username="$POSTGRES_USER" "$POSTGRES_DB"'
+docker compose exec -T db sh -c 'pg_restore --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --no-owner --no-privileges --exit-on-error' < "${dump}"
+docker compose start api
+echo "Restored ${dump}"

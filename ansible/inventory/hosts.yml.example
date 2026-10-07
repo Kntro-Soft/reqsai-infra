@@ -1,0 +1,14 @@
+all:
+  children:
+    reqsai:
+      hosts:
+        reqsai-mvp:
+          ansible_host: i-0123456789abcdef0
+          ansible_user: ubuntu
+          ansible_ssh_common_args: >-
+            -o ProxyCommand="aws ssm start-session --region us-east-1 --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p"
+          app_hostname: mvp.example.com
+          aws_region: us-east-1
+          memory_profile: small
+          backup_s3_bucket: ""
+          ecr_registry: 123456789012.dkr.ecr.us-east-1.amazonaws.com

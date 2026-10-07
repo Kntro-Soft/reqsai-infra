@@ -27,3 +27,19 @@ terraform.rc
 # IDE
 .idea/
 
+
+# Ansible inventory generated from Terraform outputs, vault files and vault passwords
+ansible/inventory/hosts.yml
+ansible/group_vars/*/vault.yml
+.vault-pass
+*.vault-pass
+
+# Rendered Compose env files (commit the *.example files instead)
+.env
+*.env
+
+# Image archives built locally for registry-free deploys
+dist/
+
+# Per-deploy overrides passed with -e @ (may hold personal settings)
+ansible/*.local.yml

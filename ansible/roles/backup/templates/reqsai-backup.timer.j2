@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily ReqsAI PostgreSQL dump
+
+[Timer]
+OnCalendar={{ backup_on_calendar }}
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

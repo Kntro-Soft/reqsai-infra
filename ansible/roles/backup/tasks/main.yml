@@ -1,0 +1,45 @@
+- name: Create the backup directory
+  ansible.builtin.file:
+    path: "{{ backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the AWS CLI for off-host copies
+  ansible.builtin.command:
+    cmd: snap install aws-cli --classic
+    creates: /snap/bin/aws
+  when: backup_s3_bucket | length > 0
+
+- name: Install the backup and restore scripts
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /usr/local/sbin/{{ item }}
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - reqsai-backup
+    - reqsai-restore
+
+- name: Install the backup systemd units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: /etc/systemd/system/{{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - reqsai-backup.service
+    - reqsai-backup.timer
+  notify: Reload systemd
+
+- name: Flush handlers before enabling the timer
+  ansible.builtin.meta: flush_handlers
+
+- name: Schedule the daily backup
+  ansible.builtin.systemd_service:
+    name: reqsai-backup.timer
+    enabled: "{{ backup_enabled | bool }}"
+    state: "{{ 'started' if backup_enabled | bool else 'stopped' }}"

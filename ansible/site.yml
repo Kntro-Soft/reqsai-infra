@@ -1,0 +1,12 @@
+- name: Provision the ReqsAI single-host stack
+  hosts: reqsai
+  become: true
+  roles:
+    - role: base
+      tags: [base]
+    - role: docker
+      tags: [docker]
+    - role: app
+      tags: [app]
+    - role: backup
+      tags: [backup]

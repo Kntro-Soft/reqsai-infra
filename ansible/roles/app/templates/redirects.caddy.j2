@@ -1,0 +1,5 @@
+{% for host in app_redirect_hostnames %}
+{{ host }} {
+	redir https://{$APP_HOSTNAME}{uri} permanent
+}
+{% endfor %}
