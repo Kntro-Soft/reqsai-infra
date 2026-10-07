@@ -73,6 +73,15 @@
     mode: "0644"
   notify: Reload caddy
 
+- name: Render the redirect hostnames
+  ansible.builtin.template:
+    src: redirects.caddy.j2
+    dest: "{{ app_dir }}/caddy/redirects.caddy"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload caddy
+
 - name: Render the Compose environment file
   ansible.builtin.template:
     src: dotenv.j2

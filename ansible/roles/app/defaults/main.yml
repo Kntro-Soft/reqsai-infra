@@ -4,6 +4,7 @@ app_compose_wait_timeout: 900
 app_verify_https: true
 
 app_acme_email: ""
+app_redirect_hostnames: []
 
 app_registry_auth: login
 app_registry_host: ghcr.io

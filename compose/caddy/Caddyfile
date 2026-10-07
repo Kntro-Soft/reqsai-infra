@@ -15,3 +15,5 @@
 		}
 	}
 }
+
+import /etc/caddy/redirects*.caddy
