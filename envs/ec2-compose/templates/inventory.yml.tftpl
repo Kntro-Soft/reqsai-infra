@@ -1,0 +1,16 @@
+all:
+  children:
+    reqsai:
+      hosts:
+        ${host_alias}:
+          ansible_host: ${ansible_host}
+          ansible_user: ubuntu
+%{ if use_ssm ~}
+          ansible_ssh_common_args: >-
+            -o ProxyCommand="aws ssm start-session --region ${aws_region} --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p"
+%{ endif ~}
+          app_hostname: ${app_hostname}
+          aws_region: ${aws_region}
+          memory_profile: ${memory_profile}
+          backup_s3_bucket: "${backup_s3_bucket}"
+          ecr_registry: ${ecr_registry}
