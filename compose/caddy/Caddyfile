@@ -5,6 +5,9 @@
 {$APP_HOSTNAME} {
 	header Strict-Transport-Security "max-age=31536000"
 
+	@i18n path /i18n/*
+	header @i18n >Cache-Control "no-cache"
+
 	@api path /api/* /ws/* /actuator/health /actuator/health/* /api-docs /api-docs/* /swagger-ui.html /swagger-ui/*
 
 	handle @api {

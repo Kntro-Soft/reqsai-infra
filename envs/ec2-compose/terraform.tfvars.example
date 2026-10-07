@@ -12,3 +12,6 @@ enable_backup_bucket         = false
 backup_bucket_retention_days = 30
 enable_ecr_pull              = false
 termination_protection       = true
+github_deploy_repository     = "Kntro-Soft/reqsai-infra"
+github_deploy_environment    = "mvp"
+github_oidc_provider_arn     = ""

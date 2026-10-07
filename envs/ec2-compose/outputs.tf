@@ -64,3 +64,8 @@ output "ansible_inventory" {
     ecr_registry     = "${data.aws_caller_identity.current.account_id}.dkr.ecr.${var.aws_region}.amazonaws.com"
   })
 }
+
+output "github_deploy_role_arn" {
+  description = "IAM role the GitHub deploy workflow assumes (AWS_DEPLOY_ROLE_ARN in the mvp environment)."
+  value       = one(aws_iam_role.github_deploy[*].arn)
+}

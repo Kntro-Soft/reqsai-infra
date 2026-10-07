@@ -29,7 +29,8 @@ un registro `A`.
 11. [Limitaciones y cuándo volver al stack ECS](#11-limitaciones-y-cuándo-volver-al-stack-ecs)
 12. [Solución de problemas](#12-solución-de-problemas)
 13. [Referencia de archivos y variables](#13-referencia-de-archivos-y-variables)
-14. [Fuentes](#14-fuentes)
+14. [Despliegue continuo con GitHub Actions](#14-despliegue-continuo-con-github-actions)
+15. [Fuentes](#15-fuentes)
 
 ---
 
@@ -485,6 +486,12 @@ Git). Con `app_images_archive_dir` definido, Ansible omite el login al registry,
 `/opt/reqsai/images`, ejecuta `docker load` solo si cambiaron y levanta Compose con `reqsai-api:archive` y
 `reqsai-web:archive`. El `PLATFORM` debe coincidir con la salida `instance_architecture` de Terraform.
 
+Si el directorio trae solo uno de los dos archivos, Ansible sube ese y conserva la imagen que ya estaba cargada
+para la otra app; si alguna de las dos imágenes no existe en el host, el rol falla antes de tocar Compose.
+
+Este mismo flujo es el que automatiza GitHub Actions: ver la
+[sección 14](#14-despliegue-continuo-con-github-actions).
+
 ---
 
 ## 8. Operación diaria
@@ -622,7 +629,8 @@ envs/ec2-compose/            Terraform del entorno (estado: envs/ec2-compose/ter
   ec2.tf                     key pair, instancia (IMDSv2, gp3 cifrado), Elastic IP
   dns.tf                     registro A en la zona existente (modo Route53)
   backups.tf                 bucket S3 privado con expiración (opcional)
-  outputs.tf                 URL, IP, comandos de acceso, inventario de Ansible
+  github-deploy.tf           proveedor OIDC de GitHub y rol de despliegue (solo SSH sobre SSM)
+  outputs.tf                 URL, IP, comandos de acceso, inventario de Ansible, ARN del rol de despliegue
   templates/inventory.yml.tftpl
   terraform.tfvars.example
 compose/
@@ -637,6 +645,8 @@ ansible/
   group_vars/reqsai/vault.yml.example
   inventory/hosts.yml.example
 scripts/build-and-push-images.sh   build linux/amd64 (o multi-arch) y push a GHCR
+scripts/save-images.sh       build linux/arm64 a archivos .tar.gz para desplegar sin registry
+.github/workflows/deploy-mvp.yml   despliegue continuo (sección 14)
 Makefile                     images, inventory, galaxy, deploy, redeploy, backup-now
 ```
 
@@ -653,10 +663,216 @@ Variables de Terraform principales (`envs/ec2-compose/variables.tf`):
 | `enable_backup_bucket` | `false` | bucket S3 para copias de los dumps |
 | `enable_ecr_pull` | `false` | permiso para descargar imágenes de ECR |
 | `termination_protection` | `true` | protege la instancia (y la base) de un borrado accidental |
+| `github_deploy_repository` | `Kntro-Soft/reqsai-infra` | repo cuyo workflow puede asumir el rol de despliegue; vacío no crea ni el proveedor OIDC ni el rol |
+| `github_deploy_environment` | `mvp` | environment de GitHub Actions exigido en el `sub` del token OIDC |
+| `github_oidc_provider_arn` | `""` | proveedor OIDC de GitHub ya existente en la cuenta; vacío lo crea |
 
 ---
 
-## 14. Fuentes
+## 14. Despliegue continuo con GitHub Actions
+
+El workflow `.github/workflows/deploy-mvp.yml` automatiza la [sección 7.4](#74-alternativa-imágenes-como-archivos-sin-registry-costo-cero):
+compila las imágenes `linux/arm64` en runners de GitHub, las sube a la instancia con Ansible por SSH tunelizado en
+SSM y comprueba el health check público. No agrega costo: los runners `ubuntu-24.04-arm` y `ubuntu-latest` son
+gratuitos en repos públicos, los artefactos se borran al día siguiente, el proveedor OIDC y el rol IAM no tienen
+costo y **no se abre el puerto 22**.
+
+### 14.1 Arquitectura
+
+```mermaid
+flowchart LR
+    subgraph apps["reqsai-api / reqsai-web"]
+        push["push a main"] --> appwf["deploy.yml<br/>gh workflow run (INFRA_DEPLOY_TOKEN)"]
+    end
+    manual["Run workflow<br/>(api_ref, web_ref)"] --> refs
+    infra["push a main en reqsai-infra<br/>(ansible/**, compose/**)"] --> refs
+    appwf --> refs
+
+    subgraph wf["reqsai-infra · deploy-mvp.yml (concurrency deploy-mvp)"]
+        refs["refs<br/>resuelve api_ref / web_ref"] --> build["build (matriz)<br/>ubuntu-24.04-arm<br/>buildx --platform linux/arm64<br/>docker save | gzip -1"]
+        build -->|"artefactos image-api, image-web<br/>(1 día)"| deploy
+        refs -->|"keep: sin build"| deploy
+        deploy["deploy · environment mvp<br/>OIDC → rol IAM<br/>ansible-playbook --tags app<br/>curl /actuator/health"]
+    end
+
+    deploy -->|"sts:AssumeRoleWithWebIdentity"| role["reqsai-mvp-github-deploy"]
+    deploy -->|"SSH sobre SSM<br/>AWS-StartSSHSession"| ec2["EC2 · docker load<br/>docker compose up"]
+```
+
+| Job | Runner | Qué hace |
+| --- | --- | --- |
+| `refs` | `ubuntu-latest` | Decide qué ref despliega cada app según el disparador y arma la matriz de builds (las apps en `keep` no se compilan). |
+| `build` | `ubuntu-24.04-arm` | Por app: `checkout` del repo en el ref, `docker buildx build --platform linux/arm64 --load -t reqsai-<app>:archive` con las etiquetas OCI `source` y `revision`, `docker save \| gzip -1` y sube el artefacto `image-<app>` (retención 1 día). Compila nativo en arm64, sin emulación. |
+| `deploy` | `ubuntu-latest`, environment `mvp` | Descarga los artefactos, asume el rol por OIDC, instala el Session Manager plugin (`.deb` oficial de AWS con versión y SHA-256 fijos) y `ansible-core`, escribe los secretos en `$RUNNER_TEMP/deploy` con `umask 077`, ejecuta `ansible-playbook site.yml --tags app` contra el ID de la instancia con un `ProxyCommand` de SSM y exige `UP` en `https://<host>/actuator/health`. Al final borra el directorio de secretos. |
+
+Medidas de seguridad:
+
+- **Rol IAM `reqsai-mvp-github-deploy`** (`envs/ec2-compose/github-deploy.tf`). Solo lo asume un token OIDC con
+  `aud = sts.amazonaws.com` y `sub = repo:Kntro-Soft/reqsai-infra:environment:mvp`; ningún otro repo, rama o job
+  sin el environment. Sus permisos: `ssm:StartSession` sobre esta instancia y solo con el documento
+  `AWS-StartSSHSession` (con `ssm:SessionDocumentAccessCheck`, así no puede abrir una shell de Session Manager),
+  terminar, reanudar y abrir el canal de datos de sus propias sesiones, y `ec2:DescribeInstances`. No lee
+  secretos, ni S3, ni modifica recursos.
+- **Llave SSH de despliegue dedicada** (`reqsai-mvp-github-deploy`, ed25519), distinta de la del administrador.
+  Se autoriza con `base_authorized_keys` y la opción `from="127.0.0.1,::1"`: el agente de SSM se conecta a sshd
+  desde localhost, así que la llave solo sirve a través del túnel SSM; aunque se filtrara, no abre sesión por el
+  puerto 22 público. También lleva `no-agent-forwarding,no-port-forwarding,no-X11-forwarding`.
+- **Environment `mvp`** con política de ramas: solo `main` puede desplegar y solo ese environment ve los secretos.
+- Los refs que llegan por inputs o `client_payload` se validan contra `^[A-Za-z0-9][A-Za-z0-9._/-]*$` y nunca se
+  interpolan dentro de un script.
+
+### 14.2 Secretos y variables del environment `mvp`
+
+Viven en **Settings → Environments → mvp** de `Kntro-Soft/reqsai-infra`. Ningún valor está en el repositorio.
+
+| Nombre | Tipo | Contenido |
+| --- | --- | --- |
+| `ANSIBLE_VAULT_PASSWORD` | secreto | contraseña del vault (contenido de `.vault-pass`) |
+| `ANSIBLE_VAULT_B64` | secreto | `ansible/group_vars/reqsai/vault.yml` **cifrado**, en base64 |
+| `ANSIBLE_EXTRA_VARS_B64` | secreto | `ansible/mvp.local.yml` sin `app_images_archive_dir`, en base64 (hostname, redirecciones, correo ACME, proveedores de IA, `base_authorized_keys`) |
+| `DEPLOY_SSH_PRIVATE_KEY` | secreto | llave privada de despliegue |
+| `AWS_DEPLOY_ROLE_ARN` | variable | `terraform -chdir=envs/ec2-compose output -raw github_deploy_role_arn` |
+| `AWS_REGION` | variable | `us-east-1` |
+| `EC2_INSTANCE_ID` | variable | `terraform -chdir=envs/ec2-compose output -raw instance_id` |
+| `APP_URL` | variable | `https://reqsai.tech` |
+
+El workflow usa **la copia guardada en GitHub**, no los archivos de tu laptop. Después de `ansible-vault edit` o de
+cambiar `mvp.local.yml`, vuelve a subirla:
+
+```bash
+R=Kntro-Soft/reqsai-infra
+gh secret set ANSIBLE_VAULT_PASSWORD --env mvp -R $R < .vault-pass
+base64 < ansible/group_vars/reqsai/vault.yml | tr -d '\n' | gh secret set ANSIBLE_VAULT_B64 --env mvp -R $R
+grep -v '^app_images_archive_dir:' ansible/mvp.local.yml | base64 | tr -d '\n' \
+  | gh secret set ANSIBLE_EXTRA_VARS_B64 --env mvp -R $R
+gh variable set EC2_INSTANCE_ID --env mvp -R $R --body "$(terraform -chdir=envs/ec2-compose output -raw instance_id)"
+```
+
+El inventario que arma el workflow solo define el host, el usuario y el `ProxyCommand`; el resto sale de
+`group_vars` y de los extra vars. `memory_profile` queda en `small` (el de `t4g.small`/`t3.small`); si cambias a
+una instancia de 1 GiB, agrega `memory_profile: micro` a `mvp.local.yml` y vuelve a subir el secreto.
+
+**Rotar la llave de despliegue:**
+
+```bash
+ssh-keygen -t ed25519 -N '' -C reqsai-mvp-github-deploy -f /tmp/reqsai-deploy/id_ed25519
+```
+
+1. Agrega la línea pública a `base_authorized_keys` en `mvp.local.yml`, con el prefijo
+   `from="127.0.0.1,::1",no-agent-forwarding,no-port-forwarding,no-X11-forwarding `.
+2. Autorízala sin tocar nada más: `cd ansible && ansible-playbook site.yml --tags authorized_keys -e @mvp.local.yml`.
+3. `gh secret set DEPLOY_SSH_PRIVATE_KEY --env mvp -R Kntro-Soft/reqsai-infra < /tmp/reqsai-deploy/id_ed25519`,
+   vuelve a subir `ANSIBLE_EXTRA_VARS_B64` y borra `/tmp/reqsai-deploy`.
+4. `base_authorized_keys` solo agrega llaves: quita la anterior de `/home/ubuntu/.ssh/authorized_keys` a mano.
+
+### 14.3 Cómo ejecutarlo
+
+| Disparador | Refs que despliega | Para qué |
+| --- | --- | --- |
+| **Actions → Deploy MVP → Run workflow** (`workflow_dispatch`) | `api_ref` y `web_ref`; por defecto `main` | despliegue manual de cualquier rama, tag o SHA |
+| `repository_dispatch` tipo `deploy-mvp` | `client_payload.api_ref` / `web_ref`; por defecto `main` | integraciones externas |
+| `push` a `main` de reqsai-infra que toque `ansible/**`, `compose/**` o el workflow | `keep` y `keep` | aplica cambios de configuración sin recompilar ni cambiar la versión de la app |
+| `push` a `main` de reqsai-api o reqsai-web ([14.5](#145-despliegue-automático-desde-reqsai-api-y-reqsai-web)) | el commit empujado para esa app, `main` para la otra | despliegue continuo |
+
+`keep` significa «no compilar esta app y dejar la imagen que ya está cargada en el host». La primera vez que se
+despliega en un host nuevo hay que pasar refs reales para las dos apps.
+
+```bash
+R=Kntro-Soft/reqsai-infra
+gh workflow run deploy-mvp.yml -R $R -f api_ref=main -f web_ref=main
+gh workflow run deploy-mvp.yml -R $R -f api_ref=feature/mi-rama -f web_ref=keep
+gh api repos/$R/dispatches -f event_type=deploy-mvp -f 'client_payload[api_ref]=v1.2.0' -f 'client_payload[web_ref]=keep'
+gh run watch -R $R "$(gh run list -R $R --workflow deploy-mvp.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+```
+
+Duración de referencia (ejecuciones de validación del 07-10-2026): un despliegue de las dos apps tardó ~11 min:
+~2 min de build (API y web en paralelo) y ~8 min de Ansible, casi todo subiendo ~300 MB por el túnel SSM
+(~0.8 MB/s). Un despliegue de una sola app sube solo su archivo (el web pesa ~28 MB) y uno de solo configuración
+(`keep`/`keep`) tarda menos de 1 min. **Hay corte** mientras la API reinicia, igual que en la
+[sección 7.1](#71-nueva-versión-de-la-aplicación).
+
+El grupo de concurrencia `deploy-mvp` no cancela la ejecución en curso, pero GitHub guarda **una sola ejecución
+pendiente** por grupo: si llegan dos más mientras una corre, la pendiente anterior se cancela y solo queda la más
+reciente. Como los despliegues de las apps usan `main` para la otra app, la última pendiente incluye a ambas; si
+ves una ejecución cancelada por concurrencia, vuelve a lanzarla con sus refs.
+
+Para saber qué commit está corriendo:
+
+```bash
+sudo docker image inspect reqsai-api:archive reqsai-web:archive \
+  --format '{{ index .Config.Labels "org.opencontainers.image.source" }} {{ index .Config.Labels "org.opencontainers.image.revision" }}'
+```
+
+El resumen de cada ejecución en Actions también muestra el ref y el SHA de cada imagen.
+
+### 14.4 Rollback
+
+El host solo guarda la imagen actual de cada app (`docker image prune` borra las anteriores), así que volver atrás
+es **desplegar un ref anterior**: un SHA, un tag o una rama.
+
+```bash
+gh workflow run deploy-mvp.yml -R Kntro-Soft/reqsai-infra -f api_ref=<sha-anterior> -f web_ref=keep
+```
+
+Busca el SHA en el resumen de una ejecución anterior que funcionaba, en `git log` de `main` o en la etiqueta
+`org.opencontainers.image.revision` antes de desplegar. Tarda lo mismo que un despliegue normal porque recompila.
+
+Cuidado con la base de datos: las migraciones de Flyway solo avanzan. Si la versión nueva ya aplicó una migración
+que la anterior no entiende, el rollback de la API puede no arrancar; en ese caso restaura el backup previo al
+despliegue ([sección 9](#9-backups-y-restauración)) o corrige hacia adelante. El frontend se puede revertir
+siempre con `api_ref=keep`.
+
+### 14.5 Despliegue automático desde reqsai-api y reqsai-web
+
+El `.github/workflows/deploy.yml` de cada app (en `push` a `main`, o a mano desde `main`) ejecuta:
+
+```bash
+gh workflow run deploy-mvp.yml --repo Kntro-Soft/reqsai-infra --ref main -f api_ref=<sha>   # reqsai-api
+gh workflow run deploy-mvp.yml --repo Kntro-Soft/reqsai-infra --ref main -f web_ref=<sha>   # reqsai-web
+```
+
+El `GITHUB_TOKEN` de un repo no puede disparar workflows en otro, así que hace falta un token propio guardado como
+secreto `INFRA_DEPLOY_TOKEN` en **cada** repo de app. Sin ese secreto el job imprime un aviso y termina en verde.
+
+Crear el token (fine-grained PAT):
+
+1. Si la organización exige aprobación o no permite fine-grained tokens: **Kntro-Soft → Settings → Personal access
+   tokens → Settings**, permitir fine-grained tokens.
+2. **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new
+   token.**
+3. *Resource owner*: `Kntro-Soft`. *Expiration*: la más corta que estés dispuesto a rotar (por ejemplo 90 días);
+   anota la fecha.
+4. *Repository access*: **Only select repositories** → `Kntro-Soft/reqsai-infra`.
+5. *Permissions → Repository permissions*: **Actions: Read and write** (GitHub agrega *Metadata: Read-only*). Nada
+   más.
+6. Genera el token y guárdalo en los dos repos (pide el valor sin mostrarlo):
+
+```bash
+gh secret set INFRA_DEPLOY_TOKEN -R Kntro-Soft/reqsai-api
+gh secret set INFRA_DEPLOY_TOKEN -R Kntro-Soft/reqsai-web
+```
+
+Ese token solo puede lanzar o cancelar workflows de reqsai-infra; los secretos del environment `mvp`, el rol de AWS
+y la llave SSH siguen fuera de su alcance, y solo `main` de reqsai-infra puede desplegar.
+
+**Orden:** crea el token cuando `main` de reqsai-api y de reqsai-web ya tengan el código que quieres en producción.
+Antes de eso, el primer push a `main` de una app desplegaría `main` de la otra.
+
+### 14.6 Solución de problemas
+
+| Síntoma | Causa probable | Qué revisar |
+| --- | --- | --- |
+| `Not authorized to perform sts:AssumeRoleWithWebIdentity` | El job no corre en el environment `mvp`, o cambió el nombre del repo o del environment | `github_deploy_repository` y `github_deploy_environment` en Terraform |
+| `Branch "x" is not allowed to deploy to mvp` | La política de ramas del environment | Settings → Environments → mvp → Deployment branches |
+| `AccessDeniedException` en `StartSession` | La instancia se recreó con otro ID | `terraform apply` (el rol apunta a la instancia nueva) y actualiza `EC2_INSTANCE_ID` |
+| `Permission denied (publickey)` | Llave de despliegue no autorizada o secreto desactualizado | `--tags authorized_keys` y `DEPLOY_SSH_PRIVATE_KEY` |
+| `... must exist on the host` | Primer despliegue o host nuevo con `keep` | Desplegar con refs reales para las dos apps |
+| `Decryption failed` | `ANSIBLE_VAULT_B64` o `ANSIBLE_VAULT_PASSWORD` no corresponden | Vuelve a subir ambos secretos (14.2) |
+| El health check no llega a `UP` | La API sigue arrancando o falló | `docker compose ps` y `docker compose logs api` en el host |
+
+---
+
+## 15. Fuentes
 
 Precios (us-east-1, consultados el 07-10-2026 en los archivos de la
 [AWS Price List](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/index.json)):
@@ -687,6 +903,15 @@ Capa gratuita y EC2:
 - [750 horas gratis de IPv4 pública en la capa gratuita (feb. 2024)](https://aws.amazon.com/about-aws/whats-new/2024/02/aws-free-tier-750-hours-free-public-ipv4-addresses/)
 - [Standard mode for burstable instances (sin créditos de lanzamiento en T3)](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-performance-instances-standard-mode-concepts.html)
 - [Unlimited mode for burstable instances](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/burstable-performance-instances-unlimited-mode-concepts.html)
+
+Despliegue continuo:
+
+- [Configuring OpenID Connect in Amazon Web Services (GitHub Docs)](https://docs.github.com/en/actions/security-for-github-actions/security-hardening-your-deployments/configuring-openid-connect-in-amazon-web-services)
+- [Managing environments for deployment (GitHub Docs)](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-deployments/managing-environments-for-deployment)
+- [Control the concurrency of workflows and jobs (GitHub Docs)](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs)
+- [arm64 hosted runners for public repositories are now generally available (GitHub Changelog)](https://github.blog/changelog/2025-08-07-arm64-hosted-runners-for-public-repositories-are-now-generally-available/)
+- [Sample IAM policies for Session Manager](https://docs.aws.amazon.com/systems-manager/latest/userguide/getting-started-restrict-access-quickstart.html)
+- [Install the Session Manager plugin on Debian Server and Ubuntu Server](https://docs.aws.amazon.com/systems-manager/latest/userguide/install-plugin-debian-and-ubuntu.html)
 
 Otros:
 

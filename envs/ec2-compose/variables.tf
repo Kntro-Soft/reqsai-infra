@@ -109,3 +109,21 @@ variable "termination_protection" {
   type        = bool
   default     = true
 }
+
+variable "github_deploy_repository" {
+  description = "GitHub repository (owner/name) whose deploy workflow may assume the deploy role through OIDC. Empty skips the OIDC provider and the role."
+  type        = string
+  default     = "Kntro-Soft/reqsai-infra"
+}
+
+variable "github_deploy_environment" {
+  description = "GitHub Actions environment the deploy job must run in; only tokens with sub repo:<repository>:environment:<this> can assume the role."
+  type        = string
+  default     = "mvp"
+}
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of an existing token.actions.githubusercontent.com OIDC provider in the account. Empty creates one (an account holds a single provider per URL)."
+  type        = string
+  default     = ""
+}

@@ -99,3 +99,13 @@
     - { name: vm.vfs_cache_pressure, value: "50" }
   loop_control:
     label: "{{ item.name }}"
+
+- name: Authorize extra SSH keys for the remote user
+  ansible.posix.authorized_key:
+    user: "{{ ansible_user }}"
+    key: "{{ item }}"
+    state: present
+  loop: "{{ base_authorized_keys }}"
+  loop_control:
+    label: "{{ item.split() | last }}"
+  tags: [authorized_keys]
