@@ -3,6 +3,8 @@
 }
 
 {$APP_HOSTNAME} {
+	header Strict-Transport-Security "max-age=31536000"
+
 	@api path /api/* /ws/* /actuator/health /actuator/health/* /api-docs /api-docs/* /swagger-ui.html /swagger-ui/*
 
 	handle @api {
