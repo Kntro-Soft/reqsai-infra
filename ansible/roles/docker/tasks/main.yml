@@ -36,3 +36,6 @@
     groups: docker
     append: true
   loop: "{{ docker_users }}"
+
+- name: Apply pending Docker daemon changes before any container starts
+  ansible.builtin.meta: flush_handlers
