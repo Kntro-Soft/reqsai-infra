@@ -1,0 +1,111 @@
+name: reqsai
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  db:
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE is required}
+    restart: unless-stopped
+    shm_size: 128mb
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:?POSTGRES_SHARED_BUFFERS is required}
+      - -c
+      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:?POSTGRES_EFFECTIVE_CACHE_SIZE is required}
+      - -c
+      - work_mem=${POSTGRES_WORK_MEM:?POSTGRES_WORK_MEM is required}
+      - -c
+      - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:?POSTGRES_MAINTENANCE_WORK_MEM is required}
+      - -c
+      - max_connections=${POSTGRES_MAX_CONNECTIONS:?POSTGRES_MAX_CONNECTIONS is required}
+      - -c
+      - max_wal_size=512MB
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+    mem_limit: ${DB_MEM_LIMIT:?DB_MEM_LIMIT is required}
+    logging: *default-logging
+
+  api:
+    image: ${API_IMAGE:?API_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - api.env
+    environment:
+      JDK_JAVA_OPTIONS: ${API_JAVA_OPTS:?API_JAVA_OPTS is required}
+    networks:
+      - backend
+      - edge
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/8080 && printf "GET /actuator/health/readiness HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && grep -q "\"status\":\"UP\"" <&3'
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 600s
+    stop_grace_period: 30s
+    mem_limit: ${API_MEM_LIMIT:?API_MEM_LIMIT is required}
+    logging: *default-logging
+
+  web:
+    image: ${WEB_IMAGE:?WEB_IMAGE is required}
+    restart: unless-stopped
+    networks:
+      - edge
+    mem_limit: ${WEB_MEM_LIMIT:?WEB_MEM_LIMIT is required}
+    logging: *default-logging
+
+  caddy:
+    image: ${CADDY_IMAGE:?CADDY_IMAGE is required}
+    restart: unless-stopped
+    depends_on:
+      - api
+      - web
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_HOSTNAME: ${APP_HOSTNAME:?APP_HOSTNAME is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    volumes:
+      - ./caddy:/etc/caddy:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - edge
+    mem_limit: ${CADDY_MEM_LIMIT:?CADDY_MEM_LIMIT is required}
+    logging: *default-logging
+
+networks:
+  backend:
+    internal: true
+  edge: {}
+
+volumes:
+  db-data: {}
+  caddy-data: {}
+  caddy-config: {}

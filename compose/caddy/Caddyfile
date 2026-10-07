@@ -1,0 +1,17 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$APP_HOSTNAME} {
+	@api path /api/* /ws/* /actuator/health /actuator/health/* /api-docs /api-docs/* /swagger-ui.html /swagger-ui/*
+
+	handle @api {
+		reverse_proxy api:8080
+	}
+
+	handle {
+		reverse_proxy web:80 {
+			header_down Permissions-Policy "camera=(), microphone=(self), display-capture=(self), geolocation=()"
+		}
+	}
+}
