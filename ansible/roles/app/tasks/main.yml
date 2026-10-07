@@ -24,7 +24,7 @@
       - vault_registry_password | default('') | length > 0
     fail_msg: app_registry_auth is 'login' but app_registry_username or vault_registry_password is empty.
     quiet: true
-  when: app_registry_auth == 'login' and not app_build_on_host | bool
+  when: app_registry_auth == 'login' and app_use_registry | bool
 
 - name: Validate the ECR registry
   ansible.builtin.assert:
@@ -32,7 +32,7 @@
       - app_ecr_registry | length > 0
     fail_msg: app_registry_auth is 'ecr' but ecr_registry is empty (it comes from the Terraform-generated inventory).
     quiet: true
-  when: app_registry_auth == 'ecr' and not app_build_on_host | bool
+  when: app_registry_auth == 'ecr' and app_use_registry | bool
 
 - name: Reject values the env files cannot hold
   ansible.builtin.assert:
@@ -97,7 +97,11 @@
 
 - name: Configure registry access
   ansible.builtin.include_tasks: registry.yml
-  when: not app_build_on_host | bool
+  when: app_use_registry | bool
+
+- name: Load images from local archives
+  ansible.builtin.include_tasks: archive.yml
+  when: app_use_archive | bool
 
 - name: Build images on the host
   ansible.builtin.include_tasks: build.yml
@@ -107,7 +111,7 @@
   community.docker.docker_compose_v2:
     project_src: "{{ app_dir }}"
     state: present
-    pull: "{{ 'missing' if app_build_on_host | bool else 'always' }}"
+    pull: "{{ 'always' if app_use_registry | bool else 'missing' }}"
     remove_orphans: true
     wait: true
     wait_timeout: "{{ app_compose_wait_timeout }}"

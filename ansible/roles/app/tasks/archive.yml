@@ -1,0 +1,28 @@
+- name: Create the image archive directory
+  ansible.builtin.file:
+    path: "{{ app_dir }}/images"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Upload the image archives
+  ansible.builtin.copy:
+    src: "{{ app_images_archive_dir }}/{{ item }}.tar.gz"
+    dest: "{{ app_dir }}/images/{{ item }}.tar.gz"
+    owner: root
+    group: root
+    mode: "0640"
+  loop:
+    - reqsai-api
+    - reqsai-web
+  register: app_image_archives
+
+- name: Load the uploaded images
+  ansible.builtin.command:
+    cmd: docker load --input {{ item.dest }}
+  loop: "{{ app_image_archives.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.changed
+  changed_when: true

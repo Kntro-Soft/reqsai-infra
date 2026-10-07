@@ -18,6 +18,7 @@ app_postgres_db: reqsai
 app_postgres_user: reqsai
 
 app_build_on_host: false
+app_images_archive_dir: ""
 app_api_git_repo: https://github.com/Kntro-Soft/reqsai-api.git
 app_api_git_version: main
 app_web_git_repo: https://github.com/Kntro-Soft/reqsai-web.git

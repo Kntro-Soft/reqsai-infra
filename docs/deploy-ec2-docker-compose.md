@@ -469,6 +469,22 @@ son privados), **detiene la API** para liberar memoria y ejecuta `docker build` 
 `reqsai-api:local` y `reqsai-web:local`. En `t3.small` con swap tarda del orden de 20–40 minutos y el corte dura
 todo ese tiempo; en `t3.micro` no se recomienda. Úsalo solo si no hay forma de publicar imágenes.
 
+### 7.4 Alternativa: imágenes como archivos, sin registry (costo cero)
+
+Sin GHCR ni ECR: las imágenes se construyen en la laptop y Ansible las sube a la instancia como archivos
+comprimidos. Conviene con una instancia Graviton (`t4g.*`) si la laptop es Apple Silicon, porque se compila
+para `linux/arm64` de forma nativa, sin emulación.
+
+```bash
+API_SRC=../ReqsAI/reqsai-api WEB_SRC=../ReqsAI/reqsai-web PLATFORM=linux/arm64 make images-archive
+cd ansible && ansible-playbook site.yml --ask-vault-pass -e app_images_archive_dir=$PWD/../dist/images
+```
+
+`make images-archive` deja `dist/images/reqsai-api.tar.gz` y `dist/images/reqsai-web.tar.gz` (ignorados por
+Git). Con `app_images_archive_dir` definido, Ansible omite el login al registry, copia los archivos a
+`/opt/reqsai/images`, ejecuta `docker load` solo si cambiaron y levanta Compose con `reqsai-api:archive` y
+`reqsai-web:archive`. El `PLATFORM` debe coincidir con la salida `instance_architecture` de Terraform.
+
 ---
 
 ## 8. Operación diaria

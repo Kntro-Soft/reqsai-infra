@@ -37,3 +37,9 @@ ansible/group_vars/*/vault.yml
 # Rendered Compose env files (commit the *.example files instead)
 .env
 *.env
+
+# Image archives built locally for registry-free deploys
+dist/
+
+# Per-deploy overrides passed with -e @ (may hold personal settings)
+ansible/*.local.yml

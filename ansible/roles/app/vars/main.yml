@@ -1,7 +1,9 @@
 app_profile: "{{ memory_profiles[memory_profile] }}"
 app_url: "https://{{ app_hostname }}"
-app_api_image_ref: "{{ 'reqsai-api:local' if app_build_on_host | bool else app_api_image }}"
-app_web_image_ref: "{{ 'reqsai-web:local' if app_build_on_host | bool else app_web_image }}"
+app_use_archive: "{{ app_images_archive_dir | length > 0 }}"
+app_use_registry: "{{ not (app_build_on_host | bool) and not (app_use_archive | bool) }}"
+app_api_image_ref: "{{ 'reqsai-api:local' if app_build_on_host | bool else ('reqsai-api:archive' if app_use_archive | bool else app_api_image) }}"
+app_web_image_ref: "{{ 'reqsai-web:local' if app_build_on_host | bool else ('reqsai-web:archive' if app_use_archive | bool else app_web_image) }}"
 app_ecr_registry: "{{ ecr_registry | default('') }}"
 app_git_token: "{{ vault_git_token | default('') }}"
 

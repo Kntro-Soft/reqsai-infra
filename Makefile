@@ -2,10 +2,13 @@ TF_DIR := envs/ec2-compose
 ANSIBLE_DIR := ansible
 VAULT_ARGS ?= --ask-vault-pass
 
-.PHONY: images inventory galaxy deploy redeploy backup-now
+.PHONY: images images-archive inventory galaxy deploy redeploy backup-now
 
 images:
 	scripts/build-and-push-images.sh
+
+images-archive:
+	scripts/save-images.sh
 
 inventory:
 	terraform -chdir=$(TF_DIR) output -raw ansible_inventory > $(ANSIBLE_DIR)/inventory/hosts.yml
