@@ -1,0 +1,8 @@
+backup_app_dir: "{{ app_dir | default('/opt/reqsai') }}"
+backup_aws_region: "{{ aws_region | default('us-east-1') }}"
+backup_enabled: true
+backup_dir: /var/backups/reqsai
+backup_keep: 7
+backup_on_calendar: "*-*-* 03:30:00"
+backup_s3_bucket: ""
+backup_s3_prefix: postgres

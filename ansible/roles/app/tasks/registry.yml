@@ -1,0 +1,31 @@
+- name: Log in to the container registry
+  ansible.builtin.command:
+    cmd: docker login {{ app_registry_host }} --username {{ app_registry_username }} --password-stdin
+    stdin: "{{ vault_registry_password }}"
+  changed_when: false
+  no_log: true
+  when: app_registry_auth == 'login'
+
+- name: Install the ECR credential helper
+  ansible.builtin.apt:
+    name: amazon-ecr-credential-helper
+    state: present
+  when: app_registry_auth == 'ecr'
+
+- name: Create the root Docker client directory
+  ansible.builtin.file:
+    path: /root/.docker
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: app_registry_auth == 'ecr'
+
+- name: Use the ECR credential helper for the account registry
+  ansible.builtin.copy:
+    dest: /root/.docker/config.json
+    content: "{{ {'credHelpers': {app_ecr_registry: 'ecr-login'}} | to_nice_json }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when: app_registry_auth == 'ecr'

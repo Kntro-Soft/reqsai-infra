@@ -1,0 +1,10 @@
+[Unit]
+Description=ReqsAI PostgreSQL dump
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/reqsai-backup
+Nice=10
+IOSchedulingClass=idle

@@ -1,0 +1,11 @@
+docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin
+docker_apt_architecture: "{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+docker_log_max_size: 10m
+docker_log_max_file: "3"
+docker_users:
+  - "{{ ansible_user | default('ubuntu') }}"

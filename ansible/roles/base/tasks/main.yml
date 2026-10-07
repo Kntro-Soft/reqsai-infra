@@ -1,0 +1,101 @@
+- name: Assert a supported operating system
+  ansible.builtin.assert:
+    that:
+      - ansible_distribution == "Ubuntu"
+      - ansible_distribution_version is version("22.04", ">=")
+    fail_msg: This playbook targets Ubuntu 22.04 or newer.
+    quiet: true
+
+- name: Install base packages
+  ansible.builtin.apt:
+    name: "{{ base_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Enable unattended security upgrades
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create the journald drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Cap the systemd journal size
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/reqsai.conf
+    content: |
+      [Journal]
+      SystemMaxUse={{ base_journald_max_use }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart journald
+
+- name: Inspect the swap file
+  ansible.builtin.stat:
+    path: "{{ base_swap_file }}"
+    get_checksum: false
+  register: base_swap
+
+- name: Create the swap file
+  when: not base_swap.stat.exists or base_swap.stat.size != (base_swap_size_mb | int) * 1024 * 1024
+  block:
+    - name: Disable the previous swap file
+      ansible.builtin.command:
+        cmd: swapoff {{ base_swap_file }}
+      when: base_swap.stat.exists
+      changed_when: true
+      failed_when: false
+
+    - name: Allocate the swap file
+      ansible.builtin.command:
+        cmd: fallocate -l {{ base_swap_size_mb }}M {{ base_swap_file }}
+      changed_when: true
+
+    - name: Restrict swap file permissions
+      ansible.builtin.file:
+        path: "{{ base_swap_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Format the swap file
+      ansible.builtin.command:
+        cmd: mkswap {{ base_swap_file }}
+      changed_when: true
+
+    - name: Enable the swap file
+      ansible.builtin.command:
+        cmd: swapon {{ base_swap_file }}
+      changed_when: true
+
+- name: Persist the swap file across reboots
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^{{ base_swap_file }}\s'
+    line: "{{ base_swap_file }} none swap sw 0 0"
+    state: present
+
+- name: Tune kernel memory settings
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/60-reqsai.conf
+    state: present
+    reload: true
+  loop:
+    - { name: vm.swappiness, value: "{{ base_swappiness }}" }
+    - { name: vm.vfs_cache_pressure, value: "50" }
+  loop_control:
+    label: "{{ item.name }}"

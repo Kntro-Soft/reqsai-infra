@@ -1,0 +1,33 @@
+memory_profile: small
+
+memory_profiles:
+  small:
+    swap_size_mb: 2048
+    db_mem_limit: 512m
+    api_mem_limit: 1024m
+    web_mem_limit: 64m
+    caddy_mem_limit: 128m
+    api_java_opts: >-
+      -Xms256m -Xmx512m -XX:MaxMetaspaceSize=256m -XX:ReservedCodeCacheSize=64m
+      -Xss512k -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError
+    db_pool_size: "10"
+    postgres_shared_buffers: 128MB
+    postgres_effective_cache_size: 512MB
+    postgres_work_mem: 4MB
+    postgres_maintenance_work_mem: 64MB
+    postgres_max_connections: "40"
+  micro:
+    swap_size_mb: 4096
+    db_mem_limit: 256m
+    api_mem_limit: 768m
+    web_mem_limit: 48m
+    caddy_mem_limit: 96m
+    api_java_opts: >-
+      -Xms128m -Xmx384m -XX:MaxMetaspaceSize=224m -XX:ReservedCodeCacheSize=48m
+      -Xss512k -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -XX:+ExitOnOutOfMemoryError
+    db_pool_size: "6"
+    postgres_shared_buffers: 64MB
+    postgres_effective_cache_size: 256MB
+    postgres_work_mem: 2MB
+    postgres_maintenance_work_mem: 32MB
+    postgres_max_connections: "25"

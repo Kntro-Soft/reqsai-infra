@@ -1,0 +1,26 @@
+vault_postgres_password: ""
+vault_registry_password: ""
+vault_git_token: ""
+
+vault_jwt_private_key_pem: |
+  -----BEGIN PRIVATE KEY-----
+  -----END PRIVATE KEY-----
+vault_jwt_public_key_pem: |
+  -----BEGIN PUBLIC KEY-----
+  -----END PUBLIC KEY-----
+vault_integrations_encryption_key: ""
+
+vault_assemblyai_api_key: ""
+vault_gemini_api_key: ""
+vault_deepgram_api_key: ""
+vault_openai_api_key: ""
+
+vault_mail_username: ""
+vault_mail_password: ""
+
+vault_stripe_api_key: ""
+vault_stripe_webhook_secret: ""
+
+vault_jira_oauth_client_id: ""
+vault_jira_oauth_client_secret: ""
+vault_jira_oauth_state_secret: ""

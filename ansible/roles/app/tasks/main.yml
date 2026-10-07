@@ -1,0 +1,142 @@
+- name: Validate required settings
+  ansible.builtin.assert:
+    that:
+      - app_hostname | default('') | length > 0
+      - app_acme_email | length > 0
+      - memory_profile in memory_profiles
+      - app_registry_auth in ['none', 'login', 'ecr']
+      - vault_postgres_password | default('') | length >= 16
+      - "'BEGIN PRIVATE KEY' in vault_jwt_private_key_pem | default('')"
+      - "'BEGIN PUBLIC KEY' in vault_jwt_public_key_pem | default('')"
+      - app_api_env.JWT_PRIVATE_KEY_PEM | length > 100
+      - app_api_env.JWT_PUBLIC_KEY_PEM | length > 100
+      - vault_integrations_encryption_key | default('') | length > 0
+    fail_msg: >-
+      Missing or invalid settings. Check app_hostname (inventory), app_acme_email and app_registry_auth
+      (group_vars/reqsai/vars.yml), memory_profile, and the vault: vault_postgres_password (16+ chars),
+      vault_jwt_private_key_pem (PKCS#8), vault_jwt_public_key_pem and vault_integrations_encryption_key.
+    quiet: true
+
+- name: Validate registry credentials
+  ansible.builtin.assert:
+    that:
+      - app_registry_username | length > 0
+      - vault_registry_password | default('') | length > 0
+    fail_msg: app_registry_auth is 'login' but app_registry_username or vault_registry_password is empty.
+    quiet: true
+  when: app_registry_auth == 'login' and not app_build_on_host | bool
+
+- name: Validate the ECR registry
+  ansible.builtin.assert:
+    that:
+      - app_ecr_registry | length > 0
+    fail_msg: app_registry_auth is 'ecr' but ecr_registry is empty (it comes from the Terraform-generated inventory).
+    quiet: true
+  when: app_registry_auth == 'ecr' and not app_build_on_host | bool
+
+- name: Reject values the env files cannot hold
+  ansible.builtin.assert:
+    that:
+      - app_unsafe_env_keys | length == 0
+    fail_msg: "These settings contain a single quote or a line break: {{ app_unsafe_env_keys | join(', ') }}"
+    quiet: true
+  vars:
+    app_unsafe_env_keys: >-
+      {{ app_compose_env | combine(app_api_env) | dict2items
+         | selectattr('value', 'search', "['\n\r]") | map(attribute='key') | list }}
+
+- name: Create the application directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - "{{ app_dir }}"
+    - "{{ app_dir }}/caddy"
+
+- name: Install the Compose file
+  ansible.builtin.copy:
+    src: "{{ app_compose_src_dir }}/compose.yaml"
+    dest: "{{ app_dir }}/compose.yaml"
+    owner: root
+    group: root
+    mode: "0640"
+
+- name: Install the Caddyfile
+  ansible.builtin.copy:
+    src: "{{ app_compose_src_dir }}/caddy/Caddyfile"
+    dest: "{{ app_dir }}/caddy/Caddyfile"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload caddy
+
+- name: Render the Compose environment file
+  ansible.builtin.template:
+    src: dotenv.j2
+    dest: "{{ app_dir }}/.env"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    app_dotenv: "{{ app_compose_env }}"
+  no_log: true
+
+- name: Render the API environment file
+  ansible.builtin.template:
+    src: dotenv.j2
+    dest: "{{ app_dir }}/api.env"
+    owner: root
+    group: root
+    mode: "0600"
+  vars:
+    app_dotenv: "{{ app_api_env }}"
+  no_log: true
+
+- name: Configure registry access
+  ansible.builtin.include_tasks: registry.yml
+  when: not app_build_on_host | bool
+
+- name: Build images on the host
+  ansible.builtin.include_tasks: build.yml
+  when: app_build_on_host | bool
+
+- name: Start or update the stack
+  community.docker.docker_compose_v2:
+    project_src: "{{ app_dir }}"
+    state: present
+    pull: "{{ 'missing' if app_build_on_host | bool else 'always' }}"
+    remove_orphans: true
+    wait: true
+    wait_timeout: "{{ app_compose_wait_timeout }}"
+
+- name: Remove dangling images
+  ansible.builtin.command:
+    cmd: docker image prune --force
+  register: app_prune
+  changed_when: "'Total reclaimed space: 0B' not in app_prune.stdout"
+
+- name: Flush handlers before the public check
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the API behind HTTPS
+  ansible.builtin.uri:
+    url: "{{ app_url }}/actuator/health/readiness"
+    status_code: 200
+  register: app_health
+  until: app_health.status == 200
+  retries: 30
+  delay: 10
+  when: app_verify_https | bool
+
+- name: Check the web app and its microphone policy
+  ansible.builtin.uri:
+    url: "{{ app_url }}/"
+    status_code: 200
+  register: app_web
+  failed_when: >-
+    app_web.status != 200
+    or 'microphone=(self)' not in (app_web.permissions_policy | default(''))
+  when: app_verify_https | bool

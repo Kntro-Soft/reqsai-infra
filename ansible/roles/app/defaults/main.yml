@@ -1,0 +1,28 @@
+app_dir: /opt/reqsai
+app_compose_src_dir: "{{ playbook_dir }}/../compose"
+app_compose_wait_timeout: 900
+app_verify_https: true
+
+app_acme_email: ""
+
+app_registry_auth: login
+app_registry_host: ghcr.io
+app_registry_username: ""
+
+app_api_image: ghcr.io/kntro-soft/reqsai-api:latest
+app_web_image: ghcr.io/kntro-soft/reqsai-web:latest
+app_postgres_image: pgvector/pgvector:0.8.7-pg16
+app_caddy_image: caddy:2.11-alpine
+
+app_postgres_db: reqsai
+app_postgres_user: reqsai
+
+app_build_on_host: false
+app_api_git_repo: https://github.com/Kntro-Soft/reqsai-api.git
+app_api_git_version: main
+app_web_git_repo: https://github.com/Kntro-Soft/reqsai-web.git
+app_web_git_version: main
+app_build_timeout: 5400
+
+app_mail_from: ""
+app_api_settings: {}
