@@ -110,6 +110,15 @@ La zona `tamci.app` la administra `envs/production` (allí está `aws_route53_zo
 consulta con un `data` source y crea `aws_route53_record.app`; no puede modificar `app.tamci.app` ni
 `api.tamci.app`. Si el nombre ya existe, `terraform apply` falla en lugar de sobrescribirlo.
 
+> **Estado real del DNS (verificado el 7 de octubre de 2026).** `tamci.app` y `tamci.software` resuelven con los
+> nameservers de name.com, no con Route53. La zona de `tamci.app` ya no existe en la cuenta, y la zona
+> `tamci.software` que sí existe en Route53 no es autoritativa, así que un registro creado ahí no se resuelve en
+> internet. Mientras la delegación siga en name.com hay dos opciones sin costo: usar sslip.io
+> (`dns_zone_name = ""`), o crear a mano en name.com un registro `A` (por ejemplo, `mvp.tamci.app`) que apunte a
+> la Elastic IP y luego pasar ese nombre a Ansible con `-e app_hostname=mvp.tamci.app` (o editarlo en el inventario
+> generado por `make inventory`). La zona `tamci.software` de Route53 cuesta
+> US$ 0.50 al mes sin uso; se puede borrar si no se piensa delegar el dominio a AWS.
+
 **Permissions-Policy:** la imagen `reqsai-web` trae en su `nginx.conf` la cabecera
 `Permissions-Policy: camera=(), microphone=(), geolocation=()`, que **bloquea el micrófono**. En producción no
 afecta porque CloudFront sirve el build desde S3 sin nginx. En este entorno Caddy reescribe esa cabecera a
