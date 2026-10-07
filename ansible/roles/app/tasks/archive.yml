@@ -16,6 +16,7 @@
   loop:
     - reqsai-api
     - reqsai-web
+  when: (app_images_archive_dir ~ '/' ~ item ~ '.tar.gz') is file
   register: app_image_archives
 
 - name: Load the uploaded images
@@ -24,5 +25,21 @@
   loop: "{{ app_image_archives.results }}"
   loop_control:
     label: "{{ item.item }}"
-  when: item.changed
+  when: item.changed | default(false)
   changed_when: true
+
+- name: Inspect the archive images on the host
+  community.docker.docker_image_info:
+    name:
+      - "{{ app_api_image_ref }}"
+      - "{{ app_web_image_ref }}"
+  register: app_archive_images
+
+- name: Require both archive images
+  ansible.builtin.assert:
+    that:
+      - app_archive_images.images | length == 2
+    fail_msg: >-
+      {{ app_api_image_ref }} and {{ app_web_image_ref }} must exist on the host. Put reqsai-api.tar.gz and
+      reqsai-web.tar.gz in {{ app_images_archive_dir }} for the first deploy; later deploys may ship only one.
+    quiet: true
