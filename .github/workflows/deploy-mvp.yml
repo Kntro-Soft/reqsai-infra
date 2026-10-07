@@ -1,0 +1,244 @@
+name: Deploy MVP
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_ref:
+        description: reqsai-api branch, tag or commit SHA to deploy, or keep to leave the running image
+        type: string
+        default: main
+      web_ref:
+        description: reqsai-web branch, tag or commit SHA to deploy, or keep to leave the running image
+        type: string
+        default: main
+  repository_dispatch:
+    types: [deploy-mvp]
+  push:
+    branches: [main]
+    paths:
+      - ansible/**
+      - compose/**
+      - .github/workflows/deploy-mvp.yml
+
+concurrency:
+  group: deploy-mvp
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  refs:
+    name: Resolve refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      api: ${{ steps.refs.outputs.api }}
+      web: ${{ steps.refs.outputs.web }}
+      builds: ${{ steps.refs.outputs.builds }}
+    steps:
+      - name: Resolve the refs to deploy
+        id: refs
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_API: ${{ inputs.api_ref }}
+          INPUT_WEB: ${{ inputs.web_ref }}
+          PAYLOAD_API: ${{ github.event.client_payload.api_ref }}
+          PAYLOAD_WEB: ${{ github.event.client_payload.web_ref }}
+        run: |
+          case "$EVENT" in
+            workflow_dispatch) api="${INPUT_API:-main}" web="${INPUT_WEB:-main}" ;;
+            repository_dispatch) api="${PAYLOAD_API:-main}" web="${PAYLOAD_WEB:-main}" ;;
+            *) api=keep web=keep ;;
+          esac
+          for ref in "$api" "$web"; do
+            if [[ ! "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+              echo "::error::Invalid ref: $ref"
+              exit 1
+            fi
+          done
+          builds=$(jq -cn --arg api "$api" --arg web "$web" \
+            '[{app: "api", ref: $api}, {app: "web", ref: $web}] | map(select(.ref != "keep"))')
+          {
+            echo "api=$api"
+            echo "web=$web"
+            echo "builds=$builds"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Refs"
+            echo "| App | Ref |"
+            echo "| --- | --- |"
+            echo "| reqsai-api | \`$api\` |"
+            echo "| reqsai-web | \`$web\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: refs
+    if: needs.refs.outputs.builds != '[]'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJSON(needs.refs.outputs.builds) }}
+    env:
+      APP: ${{ matrix.app }}
+      IMAGE: reqsai-${{ matrix.app }}:archive
+    steps:
+      - name: Check out reqsai-${{ matrix.app }}
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository_owner }}/reqsai-${{ matrix.app }}
+          ref: ${{ matrix.ref }}
+          path: src
+          persist-credentials: false
+
+      - name: Build the linux/arm64 image
+        working-directory: src
+        env:
+          REF: ${{ matrix.ref }}
+          SOURCE: ${{ github.server_url }}/${{ github.repository_owner }}/reqsai-${{ matrix.app }}
+        run: |
+          revision=$(git rev-parse HEAD)
+          docker buildx build --platform linux/arm64 --load \
+            --label "org.opencontainers.image.source=$SOURCE" \
+            --label "org.opencontainers.image.revision=$revision" \
+            --tag "$IMAGE" .
+          echo "reqsai-$APP: \`$REF\` at [\`${revision:0:12}\`]($SOURCE/commit/$revision)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the image archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/images"
+          docker save "$IMAGE" | gzip -1 > "$RUNNER_TEMP/images/reqsai-$APP.tar.gz"
+          ls -lh "$RUNNER_TEMP/images/reqsai-$APP.tar.gz"
+
+      - name: Upload the image archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-${{ matrix.app }}
+          path: ${{ runner.temp }}/images/reqsai-${{ matrix.app }}.tar.gz
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+
+  deploy:
+    name: Deploy to the MVP host
+    needs: [refs, build]
+    if: ${{ !cancelled() && needs.refs.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: mvp
+      url: ${{ vars.APP_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+      ANSIBLE_CORE_VERSION: 2.21.5
+      SSM_PLUGIN_VERSION: 1.2.835.0
+      SSM_PLUGIN_SHA256: 7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03
+    steps:
+      - name: Check out reqsai-infra
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download the image archives
+        if: needs.refs.outputs.builds != '[]'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: image-*
+          path: ${{ runner.temp }}/images
+          merge-multiple: true
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: reqsai-mvp-deploy-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install the Session Manager plugin
+        run: |
+          deb="$RUNNER_TEMP/session-manager-plugin.deb"
+          curl -fsSL -o "$deb" \
+            "https://s3.amazonaws.com/session-manager-downloads/plugin/$SSM_PLUGIN_VERSION/ubuntu_64bit/session-manager-plugin.deb"
+          echo "$SSM_PLUGIN_SHA256  $deb" | sha256sum --check --strict
+          sudo dpkg -i "$deb"
+          session-manager-plugin --version
+
+      - name: Install Ansible
+        run: |
+          pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Write the deploy credentials
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+          ANSIBLE_VAULT_B64: ${{ secrets.ANSIBLE_VAULT_B64 }}
+          ANSIBLE_EXTRA_VARS_B64: ${{ secrets.ANSIBLE_EXTRA_VARS_B64 }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          REGION: ${{ vars.AWS_REGION }}
+        run: |
+          umask 077
+          dir="$RUNNER_TEMP/deploy"
+          mkdir -p "$dir"
+          printf '%s' "$ANSIBLE_VAULT_PASSWORD" > "$dir/vault-pass"
+          printf '%s' "$ANSIBLE_VAULT_B64" | base64 --decode > "$dir/vault.yml"
+          printf '%s' "$ANSIBLE_EXTRA_VARS_B64" | base64 --decode > "$dir/extra-vars.yml"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$dir/id_deploy"
+          cat > "$dir/hosts.yml" <<EOF
+          all:
+            children:
+              reqsai:
+                hosts:
+                  reqsai-mvp:
+                    ansible_host: $INSTANCE_ID
+                    ansible_user: ubuntu
+                    ansible_ssh_private_key_file: $dir/id_deploy
+                    ansible_ssh_common_args: >-
+                      -o IdentitiesOnly=yes
+                      -o ProxyCommand="aws ssm start-session --region $REGION --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p"
+                    aws_region: $REGION
+          EOF
+          echo "DEPLOY_DIR=$dir" >> "$GITHUB_ENV"
+
+      - name: Run the app role
+        working-directory: ansible
+        env:
+          IMAGES_DIR: ${{ runner.temp }}/images
+        run: |
+          mkdir -p "$IMAGES_DIR"
+          ls -lh "$IMAGES_DIR"
+          ansible-playbook site.yml --tags app \
+            --inventory "$DEPLOY_DIR/hosts.yml" \
+            --vault-password-file "$DEPLOY_DIR/vault-pass" \
+            --extra-vars "@$DEPLOY_DIR/vault.yml" \
+            --extra-vars "@$DEPLOY_DIR/extra-vars.yml" \
+            --extra-vars "app_images_archive_dir=$IMAGES_DIR"
+
+      - name: Check the public health endpoint
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          for attempt in $(seq 1 30); do
+            status=$(curl -fsS --max-time 10 "$APP_URL/actuator/health" | jq -r '.status' || true)
+            if [ "$status" = "UP" ]; then
+              echo "$APP_URL/actuator/health is UP" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Attempt $attempt: status '${status:-none}'"
+            sleep 10
+          done
+          echo "::error::$APP_URL/actuator/health did not report UP"
+          exit 1
+
+      - name: Remove the deploy credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/deploy"
