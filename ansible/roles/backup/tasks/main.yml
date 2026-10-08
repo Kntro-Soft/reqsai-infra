@@ -12,6 +12,46 @@
     creates: /snap/bin/aws
   when: backup_s3_bucket | length > 0
 
+- name: Validate the S3-compatible credentials
+  ansible.builtin.assert:
+    that:
+      - vault_backup_s3_access_key_id | default('') | length > 0
+      - vault_backup_s3_secret_access_key | default('') | length > 0
+    fail_msg: >-
+      backup_s3_endpoint_url is set, so vault_backup_s3_access_key_id and vault_backup_s3_secret_access_key
+      are required (there is no instance role outside EC2).
+    quiet: true
+  when: backup_s3_bucket | length > 0 and backup_s3_endpoint_url | length > 0
+
+- name: Create the credentials directory
+  ansible.builtin.file:
+    path: "{{ backup_s3_credentials_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  when: backup_s3_bucket | length > 0 and backup_s3_endpoint_url | length > 0
+
+- name: Write the S3-compatible credentials
+  ansible.builtin.copy:
+    dest: "{{ backup_s3_credentials_file }}"
+    content: |
+      AWS_ACCESS_KEY_ID='{{ vault_backup_s3_access_key_id }}'
+      AWS_SECRET_ACCESS_KEY='{{ vault_backup_s3_secret_access_key }}'
+      AWS_REQUEST_CHECKSUM_CALCULATION='when_required'
+      AWS_RESPONSE_CHECKSUM_VALIDATION='when_required'
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  when: backup_s3_bucket | length > 0 and backup_s3_endpoint_url | length > 0
+
+- name: Remove unused S3-compatible credentials
+  ansible.builtin.file:
+    path: "{{ backup_s3_credentials_file }}"
+    state: absent
+  when: backup_s3_bucket | length == 0 or backup_s3_endpoint_url | length == 0
+
 - name: Install the backup and restore scripts
   ansible.builtin.template:
     src: "{{ item }}.j2"

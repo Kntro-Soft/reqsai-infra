@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+{% set backup_aws_opts = '--region ' ~ backup_s3_region ~ (' --endpoint-url ' ~ backup_s3_endpoint_url if backup_s3_endpoint_url | length > 0 else '') %}
+{% if backup_s3_bucket | length > 0 and backup_s3_endpoint_url | length > 0 %}
+
+set -a
+# shellcheck disable=SC1091
+. {{ backup_s3_credentials_file }}
+set +a
+{% endif %}
 
 source="${1:?usage: reqsai-restore <path/to/file.dump | s3://bucket/key.dump>}"
 
@@ -8,7 +16,7 @@ cd {{ backup_app_dir }}
 
 if [[ "${source}" == s3://* ]]; then
   dump="{{ backup_dir }}/restore-$(date -u +%Y%m%dT%H%M%SZ).dump"
-  /snap/bin/aws s3 cp "${source}" "${dump}" --region {{ backup_aws_region }} --only-show-errors
+  /snap/bin/aws s3 cp "${source}" "${dump}" {{ backup_aws_opts }} --only-show-errors
 else
   dump="${source}"
 fi
