@@ -1,0 +1,11 @@
+all:
+  children:
+    reqsai:
+      hosts:
+        ${host_alias}:
+          ansible_host: ${ansible_host}
+          ansible_user: ubuntu
+          ansible_connection: ssh
+          app_hostname: ${app_hostname}
+          memory_profile: ${memory_profile}
+          backup_s3_bucket: ""

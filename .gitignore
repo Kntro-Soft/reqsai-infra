@@ -30,6 +30,7 @@ terraform.rc
 
 # Ansible inventory generated from Terraform outputs, vault files and vault passwords
 ansible/inventory/hosts.yml
+ansible/inventory/oci.yml
 ansible/group_vars/*/vault.yml
 .vault-pass
 *.vault-pass
@@ -43,3 +44,6 @@ dist/
 
 # Per-deploy overrides passed with -e @ (may hold personal settings)
 ansible/*.local.yml
+
+# Remote state backend settings (commit backend.hcl.example instead)
+**/backend.hcl

@@ -1,0 +1,6 @@
+#cloud-config
+# Minimal bootstrap: Ansible only needs SSH and Python. Everything else (Docker,
+# swap, host firewall, the stack) is configured by ansible/site.yml.
+package_update: true
+packages:
+  - python3
