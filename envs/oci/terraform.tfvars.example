@@ -1,0 +1,15 @@
+region                  = "sa-santiago-1"
+oci_config_profile      = "DEFAULT"
+tenancy_ocid            = "ocid1.tenancy.oc1..aaaaaaaa"
+compartment_ocid        = "ocid1.compartment.oc1..aaaaaaaa"
+environment             = "mvp"
+availability_domain     = null
+ocpus                   = 1
+memory_in_gbs           = 6
+boot_volume_size_in_gbs = 50
+preserve_boot_volume    = true
+ssh_public_key_path     = "~/.ssh/id_ed25519.pub"
+admin_cidrs             = ["203.0.113.10/32"]
+deploy_ssh_cidrs        = []
+reserve_public_ip       = true
+app_hostname            = ""

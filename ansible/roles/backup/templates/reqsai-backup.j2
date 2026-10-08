@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+{% set backup_aws_opts = '--region ' ~ backup_s3_region ~ (' --endpoint-url ' ~ backup_s3_endpoint_url if backup_s3_endpoint_url | length > 0 else '') %}
+{% if backup_s3_bucket | length > 0 and backup_s3_endpoint_url | length > 0 %}
+
+set -a
+# shellcheck disable=SC1091
+. {{ backup_s3_credentials_file }}
+set +a
+{% endif %}
 
 cd {{ backup_app_dir }}
 
@@ -18,6 +26,6 @@ find {{ backup_dir }} -maxdepth 1 -type f -name 'reqsai-*.dump' -printf '%T@ %p\
 {% if backup_s3_bucket | length > 0 %}
 
 /snap/bin/aws s3 cp "${target}" "s3://{{ backup_s3_bucket }}/{{ backup_s3_prefix }}/$(basename "${target}")" \
-  --region {{ backup_aws_region }} --only-show-errors
+  {{ backup_aws_opts }} --only-show-errors
 echo "Uploaded to s3://{{ backup_s3_bucket }}/{{ backup_s3_prefix }}/$(basename "${target}")"
 {% endif %}

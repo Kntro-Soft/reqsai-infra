@@ -39,3 +39,8 @@ backup_enabled: true
 backup_keep: 7
 backup_on_calendar: "*-*-* 03:30:00"
 backup_s3_prefix: postgres
+# Off-host copies to S3-compatible storage outside AWS (set backup_s3_bucket in the
+# inventory and the vault_backup_s3_* keys), e.g. Cloudflare R2:
+#   backup_s3_endpoint_url: https://<account-id>.r2.cloudflarestorage.com
+#   backup_s3_region: auto
+backup_s3_endpoint_url: ""

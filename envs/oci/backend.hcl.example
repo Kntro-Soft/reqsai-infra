@@ -1,0 +1,28 @@
+# Optional remote state on Cloudflare R2 (S3-compatible). State stays local by
+# default. To opt in:
+#   1. cp backend.hcl.example backend.hcl            (backend.hcl is not committed)
+#   2. printf 'terraform {\n  backend "s3" {}\n}\n' > backend_override.tf   (ignored by git)
+#   3. export AWS_ACCESS_KEY_ID=<R2 token access key id> AWS_SECRET_ACCESS_KEY=<R2 token secret>
+#      (an R2 API token with Object Read & Write on this bucket only; never put keys in this file)
+#   4. terraform init -backend-config=backend.hcl -migrate-state
+#
+# Flags as documented for S3-compatible storage in the Terraform S3 backend docs
+# and in Cloudflare's "Remote R2 backend" guide. R2 supports If-None-Match on
+# PutObject, which use_lockfile relies on; HashiCorp supports non-AWS
+# S3 APIs on a best-effort basis only.
+
+bucket = "reqsai-terraform-state"
+key    = "envs/oci/terraform.tfstate"
+region = "auto"
+
+endpoints = {
+  s3 = "https://<cloudflare-account-id>.r2.cloudflarestorage.com"
+}
+
+use_path_style              = true
+skip_credentials_validation = true
+skip_region_validation      = true
+skip_requesting_account_id  = true
+skip_metadata_api_check     = true
+skip_s3_checksum            = true
+use_lockfile                = true

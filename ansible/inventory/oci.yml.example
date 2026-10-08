@@ -1,0 +1,11 @@
+all:
+  children:
+    reqsai:
+      hosts:
+        reqsai-mvp-oci:
+          ansible_host: 203.0.113.25
+          ansible_user: ubuntu
+          ansible_connection: ssh
+          app_hostname: 203-0-113-25.sslip.io
+          memory_profile: medium
+          backup_s3_bucket: ""
