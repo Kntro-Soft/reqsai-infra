@@ -1,0 +1,36 @@
+# OCI platform images ship /etc/iptables/rules.v4 (loaded at boot by
+# netfilter-persistent) whose INPUT chain allows only SSH and ends in a REJECT.
+# Open the public ports above that REJECT, live and in the file, and leave the
+# rest of the file alone: it also protects the iSCSI boot volume endpoints.
+# Hosts without that file (e.g. EC2) skip these tasks.
+- name: Inspect the image firewall rules
+  ansible.builtin.slurp:
+    src: "{{ base_iptables_rules_file }}"
+  register: base_iptables_rules
+  failed_when: false
+
+- name: Open the public ports in the image firewall
+  when: "'-A INPUT -j REJECT' in (base_iptables_rules.content | default('') | b64decode)"
+  block:
+    - name: Accept the public ports at boot
+      ansible.builtin.lineinfile:
+        path: "{{ base_iptables_rules_file }}"
+        line: "-A INPUT -p {{ item.protocol }} -m state --state NEW -m {{ item.protocol }} --dport {{ item.port }} -j ACCEPT"
+        insertbefore: '^-A INPUT -j REJECT'
+        firstmatch: true
+      loop: "{{ base_host_firewall_ports }}"
+      loop_control:
+        label: "{{ item.protocol }}/{{ item.port }}"
+
+    - name: Accept the public ports now
+      ansible.builtin.iptables:
+        chain: INPUT
+        protocol: "{{ item.protocol }}"
+        destination_port: "{{ item.port }}"
+        ctstate: [NEW]
+        jump: ACCEPT
+        action: insert
+        comment: reqsai public port
+      loop: "{{ base_host_firewall_ports }}"
+      loop_control:
+        label: "{{ item.protocol }}/{{ item.port }}"

@@ -100,6 +100,9 @@
   loop_control:
     label: "{{ item.name }}"
 
+- name: Open the public ports in the image firewall
+  ansible.builtin.import_tasks: host_firewall.yml
+
 - name: Authorize extra SSH keys for the remote user
   ansible.posix.authorized_key:
     user: "{{ ansible_user }}"

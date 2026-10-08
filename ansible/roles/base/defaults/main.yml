@@ -9,3 +9,8 @@ base_swap_size_mb: "{{ memory_profiles[memory_profile].swap_size_mb }}"
 base_swappiness: 10
 base_journald_max_use: 200M
 base_authorized_keys: []
+base_iptables_rules_file: /etc/iptables/rules.v4
+base_host_firewall_ports:
+  - { protocol: tcp, port: 80 }
+  - { protocol: tcp, port: 443 }
+  - { protocol: udp, port: 443 }
