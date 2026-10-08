@@ -8,6 +8,9 @@ Ansible. Es la opción más barata que sigue funcionando bien para un MVP, demos
 > actual ECS Fargate + ALB + NAT + RDS + CloudFront. A cambio se acepta un único punto de falla, escalado solo
 > vertical y unos minutos de corte en cada despliegue.
 
+> **Migración a OCI:** la prueba gratuita de `t4g.small` termina el 31-12-2026. El plan para mover este entorno a
+> una VM de OCI Always Free está en [oci-migration.md](oci-migration.md).
+
 Nada de esto toca `bootstrap/` ni `envs/production/`: el entorno tiene su propio estado
 (`envs/ec2-compose/terraform.tfstate` en el mismo bucket S3) y solo **lee** la zona Route53 `tamci.app` para crear
 un registro `A`.
