@@ -1,6 +1,21 @@
 memory_profile: small
 
 memory_profiles:
+  medium:
+    swap_size_mb: 2048
+    db_mem_limit: 1536m
+    api_mem_limit: 2048m
+    web_mem_limit: 64m
+    caddy_mem_limit: 128m
+    api_java_opts: >-
+      -Xms512m -Xmx1024m -XX:MaxMetaspaceSize=320m -XX:ReservedCodeCacheSize=96m
+      -Xss512k -XX:+UseSerialGC -XX:+ExitOnOutOfMemoryError
+    db_pool_size: "10"
+    postgres_shared_buffers: 384MB
+    postgres_effective_cache_size: 1GB
+    postgres_work_mem: 8MB
+    postgres_maintenance_work_mem: 128MB
+    postgres_max_connections: "40"
   small:
     swap_size_mb: 2048
     db_mem_limit: 512m
