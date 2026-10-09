@@ -682,14 +682,17 @@ costo y **no se abre el puerto 22**.
 ```mermaid
 flowchart LR
     subgraph apps["reqsai-api / reqsai-web"]
-        push["push a main"] --> appwf["deploy.yml<br/>gh workflow run (INFRA_DEPLOY_TOKEN)"]
+        rel["push a release/x.y.z o hotfix/x.y.z"] --> appwf["delivery.yml<br/>CI → imagen arm64 en GHCR :sha<br/>aprobación en produccion<br/>gh workflow run (INFRA_DEPLOY_TOKEN)"]
     end
-    manual["Run workflow<br/>(api_ref, web_ref)"] --> refs
-    infra["push a main en reqsai-infra<br/>(ansible/**, compose/**)"] --> refs
-    appwf --> refs
+    manual["Run workflow<br/>(api_ref, web_ref, image_source)"]
+    infra["push a main en reqsai-infra<br/>(ansible/**, compose/**)"] --> gate
+    manual --> gate
+    appwf -->|"image_source=registry<br/>api_ref o web_ref = SHA"| gate
+    gate["gate<br/>ENABLE_REQSAI_INFRA_DEPLOY<br/>¿aprobado en la app?"] -->|"no"| approve["approve<br/>environment produccion"] --> refs
+    gate -->|"sí"| refs
 
     subgraph wf["reqsai-infra · deploy-mvp.yml (concurrency deploy-mvp)"]
-        refs["refs<br/>resuelve api_ref / web_ref"] --> build["build (matriz)<br/>ubuntu-24.04-arm<br/>buildx --platform linux/arm64<br/>docker save | gzip -1"]
+        refs["refs<br/>resuelve api_ref / web_ref"] --> build["build (matriz)<br/>ubuntu-24.04-arm<br/>build: buildx --platform linux/arm64<br/>registry: docker pull ghcr.io/…:sha<br/>docker save | gzip -1"]
         build -->|"artefactos image-api, image-web<br/>(1 día)"| deploy
         refs -->|"keep: sin build"| deploy
         deploy["deploy · environment mvp<br/>OIDC → rol IAM<br/>ansible-playbook --tags app<br/>curl /actuator/health"]
@@ -701,8 +704,10 @@ flowchart LR
 
 | Job | Runner | Qué hace |
 | --- | --- | --- |
+| `gate` | `ubuntu-latest` | Si la variable de organización `ENABLE_REQSAI_INFRA_DEPLOY` no es `true`, deja el motivo en el resumen y el resto de jobs se omite. Si el despliegue viene en modo `registry`, consulta la API de Deployments de cada app: cuando su job `deploy` del environment `produccion` está `in_progress` para ese mismo SHA (es decir, ya fue aprobado y está esperando esta ejecución), no pide una segunda aprobación. |
+| `approve` | `ubuntu-latest`, environment `produccion` | Todo despliegue que no se aprobó en la app (push de configuración, ejecución manual, `repository_dispatch`) espera aquí la aprobación de `jhosepmyr`. Si la consulta de `gate` falla, también se pide aquí: el error siempre cae del lado de pedir aprobación. |
 | `refs` | `ubuntu-latest` | Decide qué ref despliega cada app según el disparador y arma la matriz de builds (las apps en `keep` no se compilan). |
-| `build` | `ubuntu-24.04-arm` | Por app: `checkout` del repo en el ref, `docker buildx build --platform linux/arm64 --load -t reqsai-<app>:archive` con las etiquetas OCI `source` y `revision`, `docker save \| gzip -1` y sube el artefacto `image-<app>` (retención 1 día). Compila nativo en arm64, sin emulación. |
+| `build` | `ubuntu-24.04-arm` | Por app, según `image_source`. **`build`** (por defecto): `checkout` del repo en el ref, `docker buildx build --platform linux/arm64 --load -t reqsai-<app>:archive` con las etiquetas OCI `source` y `revision`. **`registry`**: el ref debe ser un SHA completo; hace `docker pull ghcr.io/kntro-soft/reqsai-<app>:<sha>` con el `GITHUB_TOKEN` (`packages: read`), exige que la etiqueta `revision` sea ese SHA y la arquitectura `arm64`, y la reetiqueta como `reqsai-<app>:archive`, sin recompilar. En ambos casos `docker save \| gzip -1` y sube el artefacto `image-<app>` (retención 1 día). |
 | `deploy` | `ubuntu-latest`, environment `mvp` | Descarga los artefactos, asume el rol por OIDC, instala el Session Manager plugin (`.deb` oficial de AWS con versión y SHA-256 fijos) y `ansible-core`, escribe los secretos en `$RUNNER_TEMP/deploy` con `umask 077`, ejecuta `ansible-playbook site.yml --tags app` contra el ID de la instancia con un `ProxyCommand` de SSM y exige `UP` en `https://<host>/actuator/health`. Al final borra el directorio de secretos. |
 
 Medidas de seguridad:
@@ -718,6 +723,11 @@ Medidas de seguridad:
   desde localhost, así que la llave solo sirve a través del túnel SSM; aunque se filtrara, no abre sesión por el
   puerto 22 público. También lleva `no-agent-forwarding,no-port-forwarding,no-X11-forwarding`.
 - **Environment `mvp`** con política de ramas: solo `main` puede desplegar y solo ese environment ve los secretos.
+  El modo `registry` no cambia nada de esto: el host sigue recibiendo un archivo por SSM y nunca habla con GHCR ni
+  necesita credenciales de GitHub.
+- **Environment `produccion`** (revisor obligatorio `jhosepmyr`, sin bypass de administradores, solo `main`): lo
+  usa el job `approve`. No guarda secretos y no participa en la confianza OIDC, que sigue atada a `mvp`. Así cada
+  despliegue al host se aprueba **una vez**: en la app que lo origina o aquí.
 - Los refs que llegan por inputs o `client_payload` se validan contra `^[A-Za-z0-9][A-Za-z0-9._/-]*$` y nunca se
   interpolan dentro de un script.
 
@@ -769,10 +779,10 @@ ssh-keygen -t ed25519 -N '' -C reqsai-mvp-github-deploy -f /tmp/reqsai-deploy/id
 
 | Disparador | Refs que despliega | Para qué |
 | --- | --- | --- |
-| **Actions → Deploy MVP → Run workflow** (`workflow_dispatch`) | `api_ref` y `web_ref`; por defecto `main` | despliegue manual de cualquier rama, tag o SHA |
+| **Actions → Deploy MVP → Run workflow** (`workflow_dispatch`) | `api_ref` y `web_ref`; por defecto `main` | despliegue manual de cualquier rama, tag o SHA (pide aprobación en `produccion`) |
 | `repository_dispatch` tipo `deploy-mvp` | `client_payload.api_ref` / `web_ref`; por defecto `main` | integraciones externas |
-| `push` a `main` de reqsai-infra que toque `ansible/**`, `compose/**` o el workflow | `keep` y `keep` | aplica cambios de configuración sin recompilar ni cambiar la versión de la app |
-| `push` a `main` de reqsai-api o reqsai-web ([14.5](#145-despliegue-automático-desde-reqsai-api-y-reqsai-web)) | el commit empujado para esa app, `main` para la otra | despliegue continuo |
+| `push` a `main` de reqsai-infra que toque `ansible/**`, `compose/**` o el workflow | `keep` y `keep`, después de aprobar en `produccion` | aplica cambios de configuración sin recompilar ni cambiar la versión de la app |
+| `release/x.y.z` o `hotfix/x.y.z` de reqsai-api o reqsai-web ([14.5](#145-despliegue-desde-reqsai-api-y-reqsai-web)) | el SHA aprobado para esa app con `image_source=registry`, `keep` para la otra | entrega de una versión |
 
 `keep` significa «no compilar esta app y dejar la imagen que ya está cargada en el host». La primera vez que se
 despliega en un host nuevo hay que pasar refs reales para las dos apps.
@@ -781,6 +791,7 @@ despliega en un host nuevo hay que pasar refs reales para las dos apps.
 R=Kntro-Soft/reqsai-infra
 gh workflow run deploy-mvp.yml -R $R -f api_ref=main -f web_ref=main
 gh workflow run deploy-mvp.yml -R $R -f api_ref=feature/mi-rama -f web_ref=keep
+gh workflow run deploy-mvp.yml -R $R -f image_source=registry -f api_ref=<sha-de-40-caracteres> -f web_ref=keep
 gh api repos/$R/dispatches -f event_type=deploy-mvp -f 'client_payload[api_ref]=v1.2.0' -f 'client_payload[web_ref]=keep'
 gh run watch -R $R "$(gh run list -R $R --workflow deploy-mvp.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
 ```
@@ -794,7 +805,9 @@ Duración de referencia (ejecuciones de validación del 07-10-2026): un desplieg
 El grupo de concurrencia `deploy-mvp` no cancela la ejecución en curso, pero GitHub guarda **una sola ejecución
 pendiente** por grupo: si llegan dos más mientras una corre, la pendiente anterior se cancela y solo queda la más
 reciente. Como los despliegues de las apps usan `main` para la otra app, la última pendiente incluye a ambas; si
-ves una ejecución cancelada por concurrencia, vuelve a lanzarla con sus refs.
+ves una ejecución cancelada por concurrencia, vuelve a lanzarla con sus refs. Una ejecución que espera
+aprobación en `approve` ocupa el grupo: apruébala o recházala pronto, porque mientras tanto los despliegues de las
+apps quedan en cola (y el job que los espera en reqsai-api o reqsai-web consume su `timeout-minutes`).
 
 Para saber qué commit está corriendo:
 
@@ -810,6 +823,10 @@ El resumen de cada ejecución en Actions también muestra el ref y el SHA de cad
 El host solo guarda la imagen actual de cada app (`docker image prune` borra las anteriores), así que volver atrás
 es **desplegar un ref anterior**: un SHA, un tag o una rama.
 
+La forma preferida, para versiones publicadas con el flujo de release, es el workflow **Deploy** de la app
+(`deploy.yml`, desde `main`, con el SHA de la versión anterior): reutiliza la imagen que ya está en GHCR, pasa por
+la aprobación de `produccion` y no recompila. Para versiones anteriores a GHCR, recompila el ref aquí:
+
 ```bash
 gh workflow run deploy-mvp.yml -R Kntro-Soft/reqsai-infra -f api_ref=<sha-anterior> -f web_ref=keep
 ```
@@ -822,17 +839,48 @@ que la anterior no entiende, el rollback de la API puede no arrancar; en ese cas
 despliegue ([sección 9](#9-backups-y-restauración)) o corrige hacia adelante. El frontend se puede revertir
 siempre con `api_ref=keep`.
 
-### 14.5 Despliegue automático desde reqsai-api y reqsai-web
+### 14.5 Despliegue desde reqsai-api y reqsai-web
 
-El `.github/workflows/deploy.yml` de cada app (en `push` a `main`, o a mano desde `main`) ejecuta:
+Las apps ya no despliegan en cada `push` a `main`. El flujo de Gitflow (detalle en el `CONTRIBUTING.md` de cada
+app) es:
 
-```bash
-gh workflow run deploy-mvp.yml --repo Kntro-Soft/reqsai-infra --ref main -f api_ref=<sha>   # reqsai-api
-gh workflow run deploy-mvp.yml --repo Kntro-Soft/reqsai-infra --ref main -f web_ref=<sha>   # reqsai-web
-```
+1. Se corta `release/x.y.z` desde `develop` (o `hotfix/x.y.z` desde `main`) y se abre su PR hacia `main`.
+2. `release.yml` / `hotfix.yml` llaman a `delivery.yml`, que ejecuta el CI, **construye una sola vez** la imagen
+   `linux/arm64` y la publica como `ghcr.io/kntro-soft/reqsai-<app>:<sha>` (si ese SHA ya tiene imagen, la reutiliza).
+3. El job `deploy` corre en el environment `produccion` de la app: **ahí se aprueba**. Luego ejecuta
+
+   ```bash
+   gh workflow run deploy-mvp.yml --repo Kntro-Soft/reqsai-infra --ref main \
+     -f image_source=registry -f api_ref=<sha> -f web_ref=keep -f request_id=<app>@<sha>   # reqsai-api
+   ```
+
+   y espera a que esta ejecución termine en verde (`gh run watch --exit-status`). Este repo descarga **esa misma
+   imagen** y la despliega con el mecanismo de siempre (OIDC → `mvp` → SSH sobre SSM).
+4. Con el despliegue en verde, el PR `release/x.y.z → main` recibe un comentario con la evidencia y queda listo
+   para revisión. El ruleset de `main` de cada app exige un despliegue exitoso en `produccion` del commit del PR.
+5. Al fusionar, `tag-release.yml` verifica ese despliegue y crea el tag `vX.Y.Z` y el GitHub Release sobre el
+   commit desplegado.
+
+El `deploy.yml` de cada app queda como despliegue manual (redespliegue o rollback de un SHA que ya tiene imagen en
+GHCR), también detrás de la aprobación de `produccion`.
+
+**Configuración única de GHCR** (Settings de cada paquete, no tiene API):
+
+1. La primera ejecución de `release.yml` en reqsai-api crea el paquete `reqsai-api` enlazado al repo (etiqueta
+   `org.opencontainers.image.source`). Si el paquete ya existía (por `make images`), en **Package settings → Manage
+   Actions access** agrega `reqsai-api` con rol **Write**. Igual para reqsai-web.
+2. Para que este repo lo descargue: en el mismo menú agrega `reqsai-infra` con rol **Read**, o cambia la
+   visibilidad del paquete a **Public** (el código ya es público; así cualquiera puede hacer `pull`).
+3. Si falta el paso 1 falla el `push` en la app; si falta el paso 2 falla el `docker pull` del job `build` aquí.
+   En ambos casos el despliegue se detiene antes de tocar el host.
+
+GHCR no tiene costo hoy para paquetes públicos ni para el almacenamiento y la transferencia del Container
+registry ([GitHub Packages billing](https://docs.github.com/en/billing/concepts/product-billing/github-packages)).
+La alternativa ECR se compara en [Registro de imágenes](#registro-de-imágenes-ghcr) y en 14.7.
 
 El `GITHUB_TOKEN` de un repo no puede disparar workflows en otro, así que hace falta un token propio guardado como
-secreto `INFRA_DEPLOY_TOKEN` en **cada** repo de app. Sin ese secreto el job imprime un aviso y termina en verde.
+secreto `INFRA_DEPLOY_TOKEN` en **cada** repo de app. Sin ese secreto el job `deploy` falla (una versión no se
+marca como desplegada si no llegó al host).
 
 Crear el token (fine-grained PAT):
 
@@ -852,11 +900,18 @@ gh secret set INFRA_DEPLOY_TOKEN -R Kntro-Soft/reqsai-api
 gh secret set INFRA_DEPLOY_TOKEN -R Kntro-Soft/reqsai-web
 ```
 
-Ese token solo puede lanzar o cancelar workflows de reqsai-infra; los secretos del environment `mvp`, el rol de AWS
-y la llave SSH siguen fuera de su alcance, y solo `main` de reqsai-infra puede desplegar.
+Ese token solo puede lanzar, leer o cancelar workflows de reqsai-infra; los secretos del environment `mvp`, el rol
+de AWS y la llave SSH siguen fuera de su alcance, y solo `main` de reqsai-infra puede desplegar. Se recomienda
+moverlo de secreto de repositorio a **secreto del environment `produccion`** de cada app, para que solo un job ya
+aprobado pueda usarlo:
 
-**Orden:** crea el token cuando `main` de reqsai-api y de reqsai-web ya tengan el código que quieres en producción.
-Antes de eso, el primer push a `main` de una app desplegaría `main` de la otra.
+```bash
+gh secret set INFRA_DEPLOY_TOKEN -R Kntro-Soft/reqsai-api --env produccion
+gh secret set INFRA_DEPLOY_TOKEN -R Kntro-Soft/reqsai-web --env produccion
+```
+
+**Orden de adopción:** primero este cambio debe llegar a `main` de reqsai-infra (el modo `registry` no existe
+antes), después la configuración de GHCR y por último los workflows de release de las apps.
 
 ### 14.6 Solución de problemas
 
@@ -869,6 +924,61 @@ Antes de eso, el primer push a `main` de una app desplegaría `main` de la otra.
 | `... must exist on the host` | Primer despliegue o host nuevo con `keep` | Desplegar con refs reales para las dos apps |
 | `Decryption failed` | `ANSIBLE_VAULT_B64` o `ANSIBLE_VAULT_PASSWORD` no corresponden | Vuelve a subir ambos secretos (14.2) |
 | El health check no llega a `UP` | La API sigue arrancando o falló | `docker compose ps` y `docker compose logs api` en el host |
+| `denied` o `not found` en `docker pull ghcr.io/...` | El paquete no da acceso de lectura a reqsai-infra, o la release no publicó ese SHA | 14.5, configuración de GHCR; el job `image` de la app |
+| `image_source=registry needs the full 40-character commit SHA` | Se pasó una rama o un SHA corto en modo `registry` | Usa el SHA completo que muestra el resumen de la release |
+| La ejecución queda en *Waiting* | El job `approve` espera aprobación en `produccion` | Actions → la ejecución → **Review deployments** |
+| Todo termina en verde pero nada cambió en el host | El interruptor `ENABLE_REQSAI_INFRA_DEPLOY` está apagado | El resumen del job `gate` y 14.8 |
+
+### 14.7 Entornos: qué existe y qué falta
+
+| Entorno | Destino real | Estado |
+| --- | --- | --- |
+| DEV | Laptop de cada desarrollador (`compose.yaml` de cada app) | sin environment de GitHub: no hay destino remoto |
+| TEST | Runners de GitHub Actions (CI con Testcontainers en reqsai-api, Vitest en reqsai-web) | efímero, por PR |
+| STAGING | — | **no existe**: no hay un segundo host |
+| PRODUCCIÓN | La única EC2 (`envs/ec2-compose`) | environment `produccion` (aprobación) en las apps y en este repo; `mvp` (OIDC) aquí |
+
+Hoy la verificación previa a producción es el CI más la revisión del PR de release; la imagen aprobada es la que
+corre en producción, pero no se ensaya antes en un entorno idéntico. Agregar STAGING con la misma arquitectura:
+
+| Opción | Costo aproximado (us-east-1, precios de la [sección 3](#3-costos-por-qué-es-más-barato)) | Notas |
+| --- | --- | --- |
+| Segunda EC2 `t4g.small` 24×7 (Terraform del mismo módulo, otro `environment`) | 12.26 (EC2) + 2.40 (gp3 30 GB) + 3.65 (IPv4) ≈ **US$ 18.3/mes** | requiere un rol OIDC propio (`environment:staging`), su vault y un subdominio |
+| La misma EC2 encendida solo durante las pruebas de cada release | gp3 2.40 + IPv4 3.65 (se cobran aunque esté apagada) + 0.0168 por hora encendida | más barato; el arranque y la carga de datos de prueba quedan en el camino crítico de cada release |
+| Un segundo stack de Compose en el host actual | 0 | **no recomendado**: el perfil `small` ya reparte los 2 GiB entre Postgres, API, web y Caddy |
+
+Con cualquiera de las dos primeras, `delivery.yml` agregaría un job `staging` (environment `staging`, sin
+aprobación) antes del job `deploy`, desplegando la misma imagen `:<sha>`.
+
+**ECR en lugar de GHCR:** US$ 0.10 por GB-mes de almacenamiento y sin cargo de transferencia hacia una EC2 de la
+misma región ([ECR pricing](https://aws.amazon.com/ecr/pricing/)). Con ~0.3 GB por versión y retención de 10
+versiones son ~US$ 0.30/mes. Necesita crear el repositorio `reqsai-web` (hoy solo existe `reqsai-api`, dentro de
+`envs/production`), un rol OIDC por app con `ecr:PutImage` y un permiso `ecr:BatchGetImage` para el rol de
+despliegue o el `amazon-ecr-credential-helper` del host. No se implementó: GHCR cubre el caso sin tocar AWS.
+
+
+### 14.8 Interruptores de despliegue (variables de organización)
+
+Cada canal de despliegue de ReqsAI tiene un interruptor en un solo panel: **Kntro-Soft → Settings → Secrets and
+variables → Actions → Variables** (variables de **organización**, visibles para los repos públicos). Los workflows
+solo despliegan si la variable vale exactamente `true`; si no existe o tiene otro valor, el job se omite y el
+resumen de la ejecución dice qué variable lo apagó.
+
+| Variable | Repo y job | Qué apaga |
+| --- | --- | --- |
+| `ENABLE_REQSAI_INFRA_DEPLOY` | reqsai-infra · `deploy-mvp.yml` (todos sus disparadores) | **Todo** despliegue al host MVP, incluidos los que piden las apps (su job `deploy` falla en vez de marcar la versión como desplegada) |
+| `ENABLE_REQSAI_API_IMAGE` / `ENABLE_REQSAI_WEB_IMAGE` | reqsai-api / reqsai-web · `delivery.yml` job `image` | La publicación de la imagen en GHCR (y por lo tanto el despliegue de esa release) |
+| `ENABLE_REQSAI_API_DEPLOY` / `ENABLE_REQSAI_WEB_DEPLOY` | reqsai-api / reqsai-web · `delivery.yml` job `deploy` y `deploy.yml` | El despliegue de la app (la imagen se sigue publicando) |
+| `ENABLE_REQSAI_LANDING_PREVIEW` / `ENABLE_REQSAI_LANDING_PRODUCCION` | reqsai-landing · `release.yml` | El despliegue preliminar y la promoción en Vercel |
+
+**Antes de fusionar este cambio en `main`** crea `ENABLE_REQSAI_INFRA_DEPLOY = true`: sin ella, desde ese momento
+ningún despliegue llega al host (falla del lado seguro, pero detiene producción).
+
+Aprobaciones: todo environment que recibe un despliegue tiene revisor obligatorio `jhosepmyr`
+(`prevent_self_review: false`, sin bypass de administradores): `produccion` en reqsai-api, reqsai-web,
+reqsai-infra y reqsai-landing, y `preview` en reqsai-landing. El environment `mvp` de este repo no se tocó porque
+la confianza OIDC del rol de AWS depende de su nombre; su job solo corre después de `approve` o de una aprobación
+verificada en la app.
 
 ---
 
