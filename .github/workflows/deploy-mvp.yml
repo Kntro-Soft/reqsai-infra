@@ -1,11 +1,18 @@
 name: Deploy MVP
 run-name: Deploy MVP · ${{ inputs.request_id || github.event.client_payload.request_id || github.event_name }}
 
+# The only workflow that reaches the MVP host (AWS EC2, GitHub OIDC → environment mvp → SSH over SSM).
+#   - produccion.yml / rollback.yml of this repository call it (configuration of a release, keep/keep).
+#   - produccion.yml / rollback.yml of reqsai-api and reqsai-web dispatch it with image_source=registry and the
+#     digest of an approved release candidate; their produccion approval is reused (upstream_sha).
+#   - A person can run it by hand (build mode compiles a branch, tag or SHA), behind the produccion approval.
+# Switch: organization variable ENABLE_REQSAI_INFRA_DEPLOY ('true' = on).
+
 on:
   workflow_dispatch:
     inputs:
       image_source:
-        description: build compiles each ref; registry ships the GHCR image a release workflow built for that commit SHA
+        description: build compiles each ref; registry ships a release image by digest (sha256:...) from GHCR
         type: choice
         options: [build, registry]
         default: build
@@ -14,21 +21,41 @@ on:
         type: string
         default: ''
       api_ref:
-        description: reqsai-api branch, tag or commit SHA to deploy, or keep to leave the running image
+        description: reqsai-api ref to build, digest to ship (registry), or keep to leave the running image
         type: string
         default: main
       web_ref:
-        description: reqsai-web branch, tag or commit SHA to deploy, or keep to leave the running image
+        description: reqsai-web ref to build, digest to ship (registry), or keep to leave the running image
         type: string
         default: main
+      upstream_sha:
+        description: Commit of the app workflow whose produccion deployment is waiting for this run (no second approval)
+        type: string
+        default: ''
+      infra_ref:
+        description: reqsai-infra tag or commit whose ansible/ and compose/ are applied (empty = this run's commit)
+        type: string
+        default: ''
+  workflow_call:
+    inputs:
+      request_id:
+        type: string
+        default: ''
+      api_ref:
+        type: string
+        default: keep
+      web_ref:
+        type: string
+        default: keep
+      infra_ref:
+        type: string
+        default: ''
+    outputs:
+      deployed:
+        description: "'true' when the deploy job reached the host and the health check passed"
+        value: ${{ jobs.deploy.outputs.deployed }}
   repository_dispatch:
     types: [deploy-mvp]
-  push:
-    branches: [main]
-    paths:
-      - ansible/**
-      - compose/**
-      - .github/workflows/deploy-mvp.yml
 
 concurrency:
   group: deploy-mvp
@@ -43,67 +70,105 @@ defaults:
 
 jobs:
   gate:
-    name: Check the switch and the approval
+    name: Check the request, the switch and the approval
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       enabled: ${{ steps.gate.outputs.enabled }}
       approved_upstream: ${{ steps.gate.outputs.approved_upstream }}
+      source: ${{ steps.gate.outputs.source }}
+      api: ${{ steps.gate.outputs.api }}
+      web: ${{ steps.gate.outputs.web }}
+      infra_ref: ${{ steps.gate.outputs.infra_ref }}
+      builds: ${{ steps.gate.outputs.builds }}
     steps:
-      - name: Check the deploy switch and an upstream approval
+      - name: Resolve the request, read the switch and look for an upstream approval
         id: gate
         env:
           SWITCH: ${{ vars.ENABLE_REQSAI_INFRA_DEPLOY }}
-          EVENT: ${{ github.event_name }}
           SOURCE: ${{ inputs.image_source || github.event.client_payload.image_source || 'build' }}
-          INPUT_API: ${{ inputs.api_ref }}
-          INPUT_WEB: ${{ inputs.web_ref }}
-          PAYLOAD_API: ${{ github.event.client_payload.api_ref }}
-          PAYLOAD_WEB: ${{ github.event.client_payload.web_ref }}
+          API: ${{ inputs.api_ref || github.event.client_payload.api_ref || 'main' }}
+          WEB: ${{ inputs.web_ref || github.event.client_payload.web_ref || 'main' }}
+          UPSTREAM: ${{ inputs.upstream_sha || github.event.client_payload.upstream_sha || '' }}
+          INFRA_REF: ${{ inputs.infra_ref || github.event.client_payload.infra_ref || '' }}
           OWNER: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          ref_re='^[A-Za-z0-9][A-Za-z0-9._/-]*$'
+          digest_re='^sha256:[0-9a-f]{64}$'
+          case "$SOURCE" in
+            build)
+              for ref in "$API" "$WEB"; do
+                [[ "$ref" =~ $ref_re ]] || { echo "::error::Invalid ref: $ref"; exit 1; }
+              done
+              ;;
+            registry)
+              for ref in "$API" "$WEB"; do
+                [[ "$ref" == keep || "$ref" =~ $digest_re ]] \
+                  || { echo "::error::image_source=registry needs an image digest sha256:<64 hex> or keep, got: $ref"; exit 1; }
+              done
+              ;;
+            *) echo "::error::Invalid image_source: $SOURCE (expected build or registry)"; exit 1 ;;
+          esac
+          if [[ -n "$UPSTREAM" && ! "$UPSTREAM" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::upstream_sha must be a full commit SHA, got: $UPSTREAM"
+            exit 1
+          fi
+          if [[ -n "$INFRA_REF" && ! "$INFRA_REF" =~ $ref_re ]]; then
+            echo "::error::Invalid infra_ref: $INFRA_REF"
+            exit 1
+          fi
+          builds=$(jq -cn --arg api "$API" --arg web "$WEB" \
+            '[{app: "api", ref: $api}, {app: "web", ref: $web}] | map(select(.ref != "keep"))')
+          {
+            echo "source=$SOURCE"
+            echo "api=$API"
+            echo "web=$WEB"
+            echo "infra_ref=$INFRA_REF"
+            echo "builds=$builds"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Request"
+            echo "| App | Ref (\`$SOURCE\`) |"
+            echo "| --- | --- |"
+            echo "| reqsai-api | \`$API\` |"
+            echo "| reqsai-web | \`$WEB\` |"
+            echo "| reqsai-infra | \`${INFRA_REF:-$GITHUB_SHA}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
           if [ "$SWITCH" != true ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             msg="Deploys to the MVP host are off: the organization variable ENABLE_REQSAI_INFRA_DEPLOY is not 'true' (Kntro-Soft → Settings → Secrets and variables → Actions → Variables)."
             echo "::notice title=Deploy skipped::$msg"
-            echo "### Deploy skipped" >> "$GITHUB_STEP_SUMMARY"
             echo "$msg" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           echo "enabled=true" >> "$GITHUB_OUTPUT"
 
-          # A release of reqsai-api or reqsai-web is approved once, in the produccion environment of the app
-          # repository, and its deploy job stays in_progress while it waits for this run. Skip the second
-          # approval only when every image to deploy has such an approved deployment for that exact SHA.
-          # The deployments of a public repository are public: fall back to an anonymous read if the token
-          # of this repository is refused. Any failure leaves approved=false, which asks for approval here.
+          # A production release of reqsai-api or reqsai-web is approved once, in the produccion environment of
+          # the app repository; its job stays in_progress while it waits for this run. Skip the second approval
+          # only when every image to ship has such a deployment for the upstream commit. The deployments of a
+          # public repository are public: fall back to an anonymous read if the token of this repository is
+          # refused. Any failure leaves approved=false, which asks for approval here.
           read_api() {
             gh api "$1" --jq "$2" 2>/dev/null \
               || curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/$1" | jq -r "$2" \
               || true
           }
           approved=false
-          case "$EVENT" in
-            workflow_dispatch) api="$INPUT_API" web="$INPUT_WEB" ;;
-            repository_dispatch) api="$PAYLOAD_API" web="$PAYLOAD_WEB" ;;
-            *) api=keep web=keep ;;
-          esac
-          if [ "$SOURCE" = registry ]; then
+          if [[ "$SOURCE" == registry && -n "$UPSTREAM" ]]; then
             approved=true
             checked=0
-            for pair in "api:$api" "web:$web"; do
-              app="${pair%%:*}" sha="${pair#*:}"
-              [ "$sha" = keep ] && continue
+            for pair in "api:$API" "web:$WEB"; do
+              app="${pair%%:*}" ref="${pair#*:}"
+              [ "$ref" = keep ] && continue
               checked=$((checked + 1))
-              if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then approved=false; continue; fi
-              ids=$(read_api "repos/$OWNER/reqsai-$app/deployments?environment=produccion&sha=$sha&per_page=10" '.[].id')
               found=false
-              for id in $ids; do
+              for id in $(read_api "repos/$OWNER/reqsai-$app/deployments?environment=produccion&sha=$UPSTREAM&per_page=10" '.[].id'); do
                 state=$(read_api "repos/$OWNER/reqsai-$app/deployments/$id/statuses?per_page=1" '.[0].state')
                 if [ "$state" = in_progress ]; then found=true; break; fi
               done
-              echo "reqsai-$app \`${sha:0:12}\`: approved in produccion of reqsai-$app = $found" >> "$GITHUB_STEP_SUMMARY"
+              echo "reqsai-$app \`${UPSTREAM:0:12}\`: approved in produccion of reqsai-$app = $found" >> "$GITHUB_STEP_SUMMARY"
               [ "$found" = true ] || approved=false
             done
             [ "$checked" -gt 0 ] || approved=false
@@ -129,55 +194,11 @@ jobs:
           SHA: ${{ github.sha }}
         run: echo "Approved the $EVENT deploy from reqsai-infra \`$SHA\`." >> "$GITHUB_STEP_SUMMARY"
 
-  refs:
-    name: Resolve refs
-    needs: [gate, approve]
-    if: ${{ !cancelled() && needs.gate.outputs.enabled == 'true' && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      api: ${{ steps.refs.outputs.api }}
-      web: ${{ steps.refs.outputs.web }}
-      builds: ${{ steps.refs.outputs.builds }}
-    steps:
-      - name: Resolve the refs to deploy
-        id: refs
-        env:
-          EVENT: ${{ github.event_name }}
-          INPUT_API: ${{ inputs.api_ref }}
-          INPUT_WEB: ${{ inputs.web_ref }}
-          PAYLOAD_API: ${{ github.event.client_payload.api_ref }}
-          PAYLOAD_WEB: ${{ github.event.client_payload.web_ref }}
-        run: |
-          case "$EVENT" in
-            workflow_dispatch) api="${INPUT_API:-main}" web="${INPUT_WEB:-main}" ;;
-            repository_dispatch) api="${PAYLOAD_API:-main}" web="${PAYLOAD_WEB:-main}" ;;
-            *) api=keep web=keep ;;
-          esac
-          for ref in "$api" "$web"; do
-            if [[ ! "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
-              echo "::error::Invalid ref: $ref"
-              exit 1
-            fi
-          done
-          builds=$(jq -cn --arg api "$api" --arg web "$web" \
-            '[{app: "api", ref: $api}, {app: "web", ref: $web}] | map(select(.ref != "keep"))')
-          {
-            echo "api=$api"
-            echo "web=$web"
-            echo "builds=$builds"
-          } >> "$GITHUB_OUTPUT"
-          {
-            echo "### Refs"
-            echo "| App | Ref |"
-            echo "| --- | --- |"
-            echo "| reqsai-api | \`$api\` |"
-            echo "| reqsai-web | \`$web\` |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
   build:
-    needs: refs
-    if: needs.refs.outputs.builds != '[]'
+    needs: [gate, approve]
+    if: >-
+      ${{ !cancelled() && needs.gate.outputs.enabled == 'true' && needs.gate.outputs.builds != '[]' &&
+      (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     permissions:
@@ -186,30 +207,12 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        include: ${{ fromJSON(needs.refs.outputs.builds) }}
+        include: ${{ fromJSON(needs.gate.outputs.builds) }}
     env:
       APP: ${{ matrix.app }}
       IMAGE: reqsai-${{ matrix.app }}:archive
-      SOURCE: ${{ inputs.image_source || github.event.client_payload.image_source || 'build' }}
+      SOURCE: ${{ needs.gate.outputs.source }}
     steps:
-      - name: Check the image source
-        env:
-          REF: ${{ matrix.ref }}
-        run: |
-          case "$SOURCE" in
-            build) ;;
-            registry)
-              if [[ ! "$REF" =~ ^[0-9a-f]{40}$ ]]; then
-                echo "::error::image_source=registry needs the full 40-character commit SHA, got: $REF"
-                exit 1
-              fi
-              ;;
-            *)
-              echo "::error::Invalid image_source: $SOURCE (expected build or registry)"
-              exit 1
-              ;;
-          esac
-
       - name: Check out reqsai-${{ matrix.app }}
         if: env.SOURCE == 'build'
         uses: actions/checkout@v7
@@ -233,11 +236,10 @@ jobs:
             --tag "$IMAGE" .
           echo "reqsai-$APP: \`$REF\` at [\`${revision:0:12}\`]($SOURCE_URL/commit/$revision)" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Pull the released image from GHCR
+      - name: Pull the release image from GHCR by digest
         if: env.SOURCE == 'registry'
         env:
-          REF: ${{ matrix.ref }}
-          REGISTRY_IMAGE: ghcr.io/kntro-soft/reqsai-${{ matrix.app }}:${{ matrix.ref }}
+          REGISTRY_IMAGE: ghcr.io/kntro-soft/reqsai-${{ matrix.app }}@${{ matrix.ref }}
           SOURCE_URL: ${{ github.server_url }}/${{ github.repository_owner }}/reqsai-${{ matrix.app }}
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
@@ -245,15 +247,15 @@ jobs:
           printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
           docker pull --platform linux/arm64 "$REGISTRY_IMAGE"
           docker logout ghcr.io
-          revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$REGISTRY_IMAGE")
           arch=$(docker image inspect --format '{{ .Architecture }}' "$REGISTRY_IMAGE")
-          if [ "$revision" != "$REF" ] || [ "$arch" != arm64 ]; then
-            echo "::error::$REGISTRY_IMAGE is revision '$revision' for '$arch'; expected $REF for arm64"
+          if [ "$arch" != arm64 ]; then
+            echo "::error::$REGISTRY_IMAGE is built for '$arch'; the MVP host needs arm64"
             exit 1
           fi
+          revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$REGISTRY_IMAGE")
+          version=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$REGISTRY_IMAGE")
           docker tag "$REGISTRY_IMAGE" "$IMAGE"
-          digest=$(docker image inspect --format '{{ index .RepoDigests 0 }}' "$REGISTRY_IMAGE")
-          echo "reqsai-$APP: [\`${REF:0:12}\`]($SOURCE_URL/commit/$REF) from \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "reqsai-$APP $version: \`$REGISTRY_IMAGE\` (commit [\`${revision:0:12}\`]($SOURCE_URL/commit/$revision))" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save the image archive
         run: |
@@ -272,16 +274,24 @@ jobs:
 
   deploy:
     name: Deploy to the MVP host
-    needs: [refs, build]
-    if: ${{ !cancelled() && needs.refs.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    needs: [gate, approve, build]
+    if: >-
+      ${{ !cancelled() && needs.gate.outputs.enabled == 'true' &&
+      (needs.approve.result == 'success' || needs.approve.result == 'skipped') &&
+      (needs.build.result == 'success' || needs.build.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment:
       name: mvp
       url: ${{ vars.APP_URL }}
+    concurrency:
+      group: mvp-host
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
+    outputs:
+      deployed: ${{ steps.health.outputs.deployed }}
     env:
       ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
       ANSIBLE_CORE_VERSION: 2.21.5
@@ -291,10 +301,11 @@ jobs:
       - name: Check out reqsai-infra
         uses: actions/checkout@v7
         with:
+          ref: ${{ needs.gate.outputs.infra_ref || github.sha }}
           persist-credentials: false
 
       - name: Download the image archives
-        if: needs.refs.outputs.builds != '[]'
+        if: needs.gate.outputs.builds != '[]'
         uses: actions/download-artifact@v8
         with:
           pattern: image-*
@@ -354,6 +365,8 @@ jobs:
           EOF
           echo "DEPLOY_DIR=$dir" >> "$GITHUB_ENV"
 
+      # The app role dumps the database first (app_backup_before_deploy, default true): a new API image can run
+      # Flyway migrations, which only move forward. The dump is what a rollback restores (docs, section 14.4).
       - name: Run the app role
         working-directory: ansible
         env:
@@ -369,6 +382,7 @@ jobs:
             --extra-vars "app_images_archive_dir=$IMAGES_DIR"
 
       - name: Check the public health endpoint
+        id: health
         env:
           APP_URL: ${{ vars.APP_URL }}
         run: |
@@ -376,6 +390,7 @@ jobs:
             status=$(curl -fsS --max-time 10 "$APP_URL/actuator/health" | jq -r '.status' || true)
             if [ "$status" = "UP" ]; then
               echo "$APP_URL/actuator/health is UP" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "deployed=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
             echo "Attempt $attempt: status '${status:-none}'"
