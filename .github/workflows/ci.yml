@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Lint the workflows (actionlint + shellcheck)
+        run: docker run --rm --volume "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
+
+      - name: Lint the shell scripts
+        run: find scripts -name "*.sh" -exec shellcheck {} +
+
+      - name: Check the Terraform formatting
+        run: docker run --rm --volume "$PWD:/repo" --workdir /repo hashicorp/terraform:1.16.5 fmt -check -recursive -diff
