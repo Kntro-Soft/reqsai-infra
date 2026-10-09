@@ -1,0 +1,30 @@
+# Runs before the stack is updated, so the dump holds the schema the running API knows. The Flyway migrations
+# of a new API image only move forward: restoring this dump is how a rollback undoes them (reqsai-restore).
+- name: List the running services
+  ansible.builtin.command:
+    cmd: docker compose ps --status running --services
+    chdir: "{{ app_dir }}"
+  register: app_running_services
+  changed_when: false
+  failed_when: false
+
+- name: Check the backup script of the backup role
+  ansible.builtin.stat:
+    path: /usr/local/sbin/reqsai-backup
+  register: app_backup_script
+
+- name: Dump the database
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/reqsai-backup
+  register: app_backup
+  changed_when: true
+  when:
+    - app_backup_script.stat.exists
+    - "'db' in app_running_services.stdout_lines | default([])"
+
+- name: Report the backup
+  ansible.builtin.debug:
+    msg: >-
+      {{ app_backup.stdout_lines | default([]) | join(' ')
+         if app_backup is not skipped
+         else 'No backup: the database is not running yet or the backup role is not installed.' }}

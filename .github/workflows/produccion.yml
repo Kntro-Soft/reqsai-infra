@@ -1,0 +1,126 @@
+name: Produccion
+
+# A push to main (a merged release/X.Y.Z or hotfix/X.Y.Z pull request):
+#   find the candidate vX.Y.Z-rc.N whose tree hash equals this commit's tree (otherwise fail: main differs from
+#   what was verified) → deploy-mvp.yml applies this configuration to the MVP host after approval in produccion
+#   (the app role backs up the database first) → only if the deploy succeeded: tag vX.Y.Z + GitHub Release with
+#   the candidate's archive, and the back-merge pull request main → develop.
+# Re-running the failed jobs reuses the same candidate. Nothing is rebuilt.
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: produccion-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Find the approved candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.find.outputs.version }}
+      released: ${{ steps.find.outputs.released }}
+      tag: ${{ steps.find.outputs.tag }}
+      candidate: ${{ steps.find.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Match this commit's tree with a verified release candidate
+        id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(.github/scripts/candidate.sh version VERSION)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$version" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Nothing to release::v$version is already released; this push to main deploys nothing."
+            exit 0
+          fi
+          tree=$(git rev-parse 'HEAD^{tree}')
+          json=$(.github/scripts/candidate.sh find "$version" "$tree")
+          {
+            echo "released=false"
+            echo "tag=$(jq -r .tag <<<"$json")"
+            echo "candidate=$json"
+          } >> "$GITHUB_OUTPUT"
+          echo "### v$version from candidate $(jq -r .tag <<<"$json") (stage $(jq -r .stage <<<"$json"), tree \`${tree:0:12}\`)" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy
+    needs: prepare
+    if: needs.prepare.outputs.released == 'false'
+    uses: ./.github/workflows/deploy-mvp.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    with:
+      request_id: reqsai-infra ${{ needs.prepare.outputs.tag }} ${{ github.run_id }}
+      api_ref: keep
+      web_ref: keep
+
+  release:
+    name: Tag v${{ needs.prepare.outputs.version }} and back-merge
+    needs: [prepare, deploy]
+    if: needs.deploy.outputs.deployed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Publish v${{ needs.prepare.outputs.version }} with the candidate's archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          dir="$RUNNER_TEMP/candidate"
+          .github/scripts/candidate.sh fetch "$TAG" "$dir"
+          printf '%s' "$CANDIDATE" > "$RUNNER_TEMP/candidate.json"
+          mapfile -t assets < <(jq -r --arg dir "$dir" '.assets | keys[] | "\($dir)/\(.)"' "$RUNNER_TEMP/candidate.json")
+          url=$(.github/scripts/candidate.sh final "$RUNNER_TEMP/candidate.json" "$GITHUB_SHA" "${assets[@]}")
+          echo "Released: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open the back-merge pull request into develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          body="$RUNNER_TEMP/back-merge.md"
+          {
+            echo "Gitflow back-merge of release $VERSION, now tagged [v$VERSION]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/v$VERSION) and deployed."
+            echo
+            echo "Brings the fixes made on the release or hotfix branch (and its version bump) back into \`develop\`."
+          } > "$body"
+          url=$(.github/scripts/candidate.sh pr main develop "chore: merge release $VERSION back into develop" "$body")
+          echo "Back-merge: ${url:-not needed}" >> "$GITHUB_STEP_SUMMARY"
+
+  not-released:
+    name: Explain why nothing was tagged
+    needs: [prepare, deploy]
+    if: needs.deploy.result == 'success' && needs.deploy.outputs.deployed != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Explain why nothing was tagged
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          msg="Nothing reached the MVP host (ENABLE_REQSAI_INFRA_DEPLOY is not 'true'), so v$VERSION was not tagged. Turn the switch on and re-run all jobs of this run."
+          echo "::warning title=v$VERSION not released::$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"

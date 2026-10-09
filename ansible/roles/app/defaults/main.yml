@@ -2,6 +2,8 @@ app_dir: /opt/reqsai
 app_compose_src_dir: "{{ playbook_dir }}/../compose"
 app_compose_wait_timeout: 900
 app_verify_https: true
+# Dump the database (backup role script) before the stack changes; each dump counts towards backup_keep.
+app_backup_before_deploy: true
 
 app_acme_email: ""
 app_redirect_hostnames: []

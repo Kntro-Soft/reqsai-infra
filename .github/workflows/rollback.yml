@@ -1,0 +1,68 @@
+name: Rollback
+
+# Re-applies the ansible/ and compose/ of an earlier release vX.Y.Z to the MVP host (approval in produccion,
+# nothing is built; the application images stay as they are). The app role backs up the database first.
+# Roll the applications back with the Rollback workflow of reqsai-api / reqsai-web. If a newer API version
+# already ran Flyway migrations, restore the dump taken before its deploy on the host (docs, section 14.4):
+#   sudo /usr/local/sbin/reqsai-restore /var/backups/reqsai/reqsai-<timestamp>.dump
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Released version to re-apply, X.Y.Z (a final GitHub Release vX.Y.Z of this repository)
+        type: string
+        required: true
+
+concurrency:
+  group: produccion-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Check the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Require a final release and the main branch
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be X.Y.Z, got: $VERSION"
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::Run the rollback from main (Use workflow from → main); produccion only accepts main."
+            exit 1
+          fi
+          prerelease=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease) \
+            || { echo "::error::There is no GitHub Release v$VERSION"; exit 1; }
+          if [ "$prerelease" != false ]; then
+            echo "::error::v$VERSION is a pre-release; roll back to a version that reached production"
+            exit 1
+          fi
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "### Rollback of the MVP host configuration to v$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy
+    needs: prepare
+    uses: ./.github/workflows/deploy-mvp.yml
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    with:
+      request_id: rollback reqsai-infra ${{ needs.prepare.outputs.tag }} ${{ github.run_id }}
+      api_ref: keep
+      web_ref: keep
+      infra_ref: ${{ needs.prepare.outputs.tag }}

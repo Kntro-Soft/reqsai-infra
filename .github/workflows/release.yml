@@ -1,0 +1,194 @@
+name: Release
+
+# Gitflow release flow, model C + tag at the end. A push to release/X.Y.Z or hotfix/X.Y.Z:
+#   CI → candidate vX.Y.Z-rc.N built ONCE (pre-release with this commit's ansible/ and compose/ as an archive,
+#   its SHA-256 and the tree hash) → automatic verification of that archive (no second EC2: the Compose stack runs
+#   on the runner with the images in production) → the pull request release/X.Y.Z → main.
+# Merging that pull request runs produccion.yml, which deploys this same candidate and only then tags vX.Y.Z.
+
+on:
+  push:
+    branches: ['release/**', 'hotfix/**']
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Version and candidate number
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.candidate.outputs.version }}
+      candidate: ${{ steps.candidate.outputs.candidate }}
+      tag: ${{ steps.candidate.outputs.tag }}
+      tree: ${{ steps.candidate.outputs.tree }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check the version and number the candidate
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          version=$(.github/scripts/candidate.sh branch "$BRANCH" VERSION)
+          read -r rc reused < <(.github/scripts/candidate.sh next "$version" "$GITHUB_SHA")
+          tree=$(git rev-parse 'HEAD^{tree}')
+          {
+            echo "version=$version"
+            echo "candidate=$version-rc.$rc"
+            echo "tag=v$version-rc.$rc"
+            echo "tree=$tree"
+          } >> "$GITHUB_OUTPUT"
+          echo "### reqsai-infra $version-rc.$rc from \`$BRANCH\` at \`${GITHUB_SHA:0:12}\` (tree \`${tree:0:12}\`, reused: $reused)" >> "$GITHUB_STEP_SUMMARY"
+
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  candidate:
+    name: Build the candidate once
+    needs: [prepare, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Store the candidate as a pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CANDIDATE: ${{ needs.prepare.outputs.candidate }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          TREE: ${{ needs.prepare.outputs.tree }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          asset="$RUNNER_TEMP/reqsai-infra-$VERSION.tar.gz"
+          git archive --format=tar.gz --prefix="reqsai-infra-$VERSION/" --output "$asset" HEAD
+          sum=$(sha256sum "$asset" | cut -d' ' -f1)
+          jq -n --arg repository "$GITHUB_REPOSITORY" --arg version "$VERSION" --arg candidate "$CANDIDATE" \
+            --arg tag "$TAG" --arg commit "$GITHUB_SHA" --arg tree "$TREE" --arg branch "$BRANCH" \
+            --arg build "$GITHUB_RUN_NUMBER" --arg run_url "$RUN_URL" --arg name "$(basename "$asset")" --arg sum "$sum" \
+            '{repository: $repository, version: $version, candidate: $candidate, tag: $tag, commit: $commit,
+              tree: $tree, branch: $branch, build: $build, run_url: $run_url, stage: "pending",
+              assets: {($name): $sum}}' > "$RUNNER_TEMP/candidate.json"
+          url=$(.github/scripts/candidate.sh create "$RUNNER_TEMP/candidate.json" "$asset")
+          echo "Candidate: [$TAG]($url) — \`$(basename "$asset")\` sha256 \`$sum\`" >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    name: Verify the candidate
+    needs: [prepare, candidate]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      api_image: ${{ steps.images.outputs.api }}
+      web_image: ${{ steps.images.outputs.web }}
+    env:
+      ANSIBLE_CORE_VERSION: 2.21.5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download the candidate and check its SHA-256
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          .github/scripts/candidate.sh fetch "$TAG" "$RUNNER_TEMP/candidate"
+          tar -xzf "$RUNNER_TEMP/candidate/reqsai-infra-$VERSION.tar.gz" -C "$RUNNER_TEMP"
+          echo "CANDIDATE_DIR=$RUNNER_TEMP/reqsai-infra-$VERSION" >> "$GITHUB_ENV"
+
+      # The images running in production are tagged latest in GHCR by the produccion workflow of each app. Before
+      # the first release of an app reaches production there is no such tag: build its develop branch instead.
+      - name: Resolve the application images (production, or develop before the first release)
+        id: images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          for app in api web; do
+            ref="ghcr.io/kntro-soft/reqsai-$app:latest"
+            if digest=$(docker buildx imagetools inspect "$ref" --format '{{ json .Manifest }}' 2>/dev/null | jq -r '.digest // empty') \
+              && [ -n "$digest" ]; then
+              image="ghcr.io/kntro-soft/reqsai-$app@$digest"
+              docker pull --quiet --platform linux/arm64 "$image"
+              echo "reqsai-$app: production image \`$image\`" >> "$GITHUB_STEP_SUMMARY"
+            else
+              image="reqsai-$app:develop"
+              git clone --quiet --depth 1 --branch develop "https://github.com/$OWNER/reqsai-$app.git" "$RUNNER_TEMP/src-$app"
+              docker buildx build --platform linux/arm64 --load --tag "$image" "$RUNNER_TEMP/src-$app"
+              echo "reqsai-$app: no production image in GHCR yet, built \`develop\` at \`$(git -C "$RUNNER_TEMP/src-$app" rev-parse --short=12 HEAD)\`" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            echo "$app=$image" >> "$GITHUB_OUTPUT"
+          done
+          docker logout ghcr.io
+
+      - name: Install Ansible (renders the backup role scripts)
+        run: pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
+
+      - name: Run the candidate's Compose stack, routes, backup and restore
+        env:
+          API_IMAGE: ${{ steps.images.outputs.api }}
+          WEB_IMAGE: ${{ steps.images.outputs.web }}
+        run: '"$CANDIDATE_DIR/scripts/verify-stack.sh" "$API_IMAGE" "$WEB_IMAGE"'
+
+  ready:
+    name: Release candidate ready
+    needs: [prepare, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Mark the candidate as verified and open or update the release pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          BRANCH: ${{ github.ref_name }}
+          API_IMAGE: ${{ needs.verify.outputs.api_image }}
+          WEB_IMAGE: ${{ needs.verify.outputs.web_image }}
+          STAGE_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          json=$(.github/scripts/candidate.sh mark "$TAG" verified \
+            "$(jq -cn --arg api "$API_IMAGE" --arg web "$WEB_IMAGE" '{verified_with: {api: $api, web: $web}}')")
+          body="$RUNNER_TEMP/pr.md"
+          {
+            echo "## Release $VERSION"
+            echo
+            echo "Candidate **[$TAG]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG)**: commit \`$(jq -r .commit <<<"$json")\`, tree \`$(jq -r .tree <<<"$json")\`, build $(jq -r .build <<<"$json")."
+            echo
+            jq -r '.assets | to_entries[] | "- `\(.key)` sha256 `\(.value)`"' <<<"$json"
+            echo "- Verified automatically: $STAGE_URL (Compose stack with \`$API_IMAGE\` and \`$WEB_IMAGE\`, routes through Caddy, backup and restore)"
+            echo
+            echo "Merging into \`main\` runs **Produccion** (\`produccion.yml\`): it finds this candidate by tree hash, waits for approval in \`produccion\`, backs up the database and applies this configuration to the MVP host, then tags \`v$VERSION\` and opens the back-merge into \`develop\`."
+            echo "A new push to \`$BRANCH\` builds the next candidate and updates this description."
+          } > "$body"
+          url=$(.github/scripts/candidate.sh pr "$BRANCH" main "release: $VERSION" "$body")
+          echo "Release pull request: $url" >> "$GITHUB_STEP_SUMMARY"

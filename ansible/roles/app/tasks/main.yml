@@ -116,6 +116,10 @@
   ansible.builtin.include_tasks: build.yml
   when: app_build_on_host | bool
 
+- name: Back up the database before updating the stack
+  ansible.builtin.import_tasks: backup.yml
+  when: app_backup_before_deploy | bool
+
 - name: Start or update the stack
   community.docker.docker_compose_v2:
     project_src: "{{ app_dir }}"
