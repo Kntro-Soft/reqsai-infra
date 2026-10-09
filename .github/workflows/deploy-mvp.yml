@@ -1,8 +1,18 @@
 name: Deploy MVP
+run-name: Deploy MVP · ${{ inputs.request_id || github.event.client_payload.request_id || github.event_name }}
 
 on:
   workflow_dispatch:
     inputs:
+      image_source:
+        description: build compiles each ref; registry ships the GHCR image a release workflow built for that commit SHA
+        type: choice
+        options: [build, registry]
+        default: build
+      request_id:
+        description: Correlation id set by the calling workflow; it only names the run
+        type: string
+        default: ''
       api_ref:
         description: reqsai-api branch, tag or commit SHA to deploy, or keep to leave the running image
         type: string
@@ -32,8 +42,97 @@ defaults:
     shell: bash
 
 jobs:
+  gate:
+    name: Check the switch and the approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.gate.outputs.enabled }}
+      approved_upstream: ${{ steps.gate.outputs.approved_upstream }}
+    steps:
+      - name: Check the deploy switch and an upstream approval
+        id: gate
+        env:
+          SWITCH: ${{ vars.ENABLE_REQSAI_INFRA_DEPLOY }}
+          EVENT: ${{ github.event_name }}
+          SOURCE: ${{ inputs.image_source || github.event.client_payload.image_source || 'build' }}
+          INPUT_API: ${{ inputs.api_ref }}
+          INPUT_WEB: ${{ inputs.web_ref }}
+          PAYLOAD_API: ${{ github.event.client_payload.api_ref }}
+          PAYLOAD_WEB: ${{ github.event.client_payload.web_ref }}
+          OWNER: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$SWITCH" != true ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            msg="Deploys to the MVP host are off: the organization variable ENABLE_REQSAI_INFRA_DEPLOY is not 'true' (Kntro-Soft → Settings → Secrets and variables → Actions → Variables)."
+            echo "::notice title=Deploy skipped::$msg"
+            echo "### Deploy skipped" >> "$GITHUB_STEP_SUMMARY"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+
+          # A release of reqsai-api or reqsai-web is approved once, in the produccion environment of the app
+          # repository, and its deploy job stays in_progress while it waits for this run. Skip the second
+          # approval only when every image to deploy has such an approved deployment for that exact SHA.
+          # The deployments of a public repository are public: fall back to an anonymous read if the token
+          # of this repository is refused. Any failure leaves approved=false, which asks for approval here.
+          read_api() {
+            gh api "$1" --jq "$2" 2>/dev/null \
+              || curl -fsS -H 'Accept: application/vnd.github+json' "https://api.github.com/$1" | jq -r "$2" \
+              || true
+          }
+          approved=false
+          case "$EVENT" in
+            workflow_dispatch) api="$INPUT_API" web="$INPUT_WEB" ;;
+            repository_dispatch) api="$PAYLOAD_API" web="$PAYLOAD_WEB" ;;
+            *) api=keep web=keep ;;
+          esac
+          if [ "$SOURCE" = registry ]; then
+            approved=true
+            checked=0
+            for pair in "api:$api" "web:$web"; do
+              app="${pair%%:*}" sha="${pair#*:}"
+              [ "$sha" = keep ] && continue
+              checked=$((checked + 1))
+              if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then approved=false; continue; fi
+              ids=$(read_api "repos/$OWNER/reqsai-$app/deployments?environment=produccion&sha=$sha&per_page=10" '.[].id')
+              found=false
+              for id in $ids; do
+                state=$(read_api "repos/$OWNER/reqsai-$app/deployments/$id/statuses?per_page=1" '.[0].state')
+                if [ "$state" = in_progress ]; then found=true; break; fi
+              done
+              echo "reqsai-$app \`${sha:0:12}\`: approved in produccion of reqsai-$app = $found" >> "$GITHUB_STEP_SUMMARY"
+              [ "$found" = true ] || approved=false
+            done
+            [ "$checked" -gt 0 ] || approved=false
+          fi
+          echo "approved_upstream=$approved" >> "$GITHUB_OUTPUT"
+          if [ "$approved" = true ]; then
+            echo "Approval: already given in the produccion environment of the app repository." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Approval: required in the produccion environment of reqsai-infra (job *Approve the deploy*)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  approve:
+    name: Approve the deploy
+    needs: gate
+    if: needs.gate.outputs.enabled == 'true' && needs.gate.outputs.approved_upstream != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: produccion
+    steps:
+      - name: Record the approval
+        env:
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+        run: echo "Approved the $EVENT deploy from reqsai-infra \`$SHA\`." >> "$GITHUB_STEP_SUMMARY"
+
   refs:
     name: Resolve refs
+    needs: [gate, approve]
+    if: ${{ !cancelled() && needs.gate.outputs.enabled == 'true' && (needs.approve.result == 'success' || needs.approve.result == 'skipped') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -81,6 +180,9 @@ jobs:
     if: needs.refs.outputs.builds != '[]'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
     strategy:
       fail-fast: true
       matrix:
@@ -88,8 +190,28 @@ jobs:
     env:
       APP: ${{ matrix.app }}
       IMAGE: reqsai-${{ matrix.app }}:archive
+      SOURCE: ${{ inputs.image_source || github.event.client_payload.image_source || 'build' }}
     steps:
+      - name: Check the image source
+        env:
+          REF: ${{ matrix.ref }}
+        run: |
+          case "$SOURCE" in
+            build) ;;
+            registry)
+              if [[ ! "$REF" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "::error::image_source=registry needs the full 40-character commit SHA, got: $REF"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Invalid image_source: $SOURCE (expected build or registry)"
+              exit 1
+              ;;
+          esac
+
       - name: Check out reqsai-${{ matrix.app }}
+        if: env.SOURCE == 'build'
         uses: actions/checkout@v7
         with:
           repository: ${{ github.repository_owner }}/reqsai-${{ matrix.app }}
@@ -98,17 +220,40 @@ jobs:
           persist-credentials: false
 
       - name: Build the linux/arm64 image
+        if: env.SOURCE == 'build'
         working-directory: src
         env:
           REF: ${{ matrix.ref }}
-          SOURCE: ${{ github.server_url }}/${{ github.repository_owner }}/reqsai-${{ matrix.app }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository_owner }}/reqsai-${{ matrix.app }}
         run: |
           revision=$(git rev-parse HEAD)
           docker buildx build --platform linux/arm64 --load \
-            --label "org.opencontainers.image.source=$SOURCE" \
+            --label "org.opencontainers.image.source=$SOURCE_URL" \
             --label "org.opencontainers.image.revision=$revision" \
             --tag "$IMAGE" .
-          echo "reqsai-$APP: \`$REF\` at [\`${revision:0:12}\`]($SOURCE/commit/$revision)" >> "$GITHUB_STEP_SUMMARY"
+          echo "reqsai-$APP: \`$REF\` at [\`${revision:0:12}\`]($SOURCE_URL/commit/$revision)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull the released image from GHCR
+        if: env.SOURCE == 'registry'
+        env:
+          REF: ${{ matrix.ref }}
+          REGISTRY_IMAGE: ghcr.io/kntro-soft/reqsai-${{ matrix.app }}:${{ matrix.ref }}
+          SOURCE_URL: ${{ github.server_url }}/${{ github.repository_owner }}/reqsai-${{ matrix.app }}
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$ACTOR" --password-stdin
+          docker pull --platform linux/arm64 "$REGISTRY_IMAGE"
+          docker logout ghcr.io
+          revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$REGISTRY_IMAGE")
+          arch=$(docker image inspect --format '{{ .Architecture }}' "$REGISTRY_IMAGE")
+          if [ "$revision" != "$REF" ] || [ "$arch" != arm64 ]; then
+            echo "::error::$REGISTRY_IMAGE is revision '$revision' for '$arch'; expected $REF for arm64"
+            exit 1
+          fi
+          docker tag "$REGISTRY_IMAGE" "$IMAGE"
+          digest=$(docker image inspect --format '{{ index .RepoDigests 0 }}' "$REGISTRY_IMAGE")
+          echo "reqsai-$APP: [\`${REF:0:12}\`]($SOURCE_URL/commit/$REF) from \`$digest\`" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save the image archive
         run: |
