@@ -701,7 +701,7 @@ flowchart TD
             approve -->|"keep / keep"| deploy
         end
     end
-    aprod -->|"gh api dispatches (INFRA_DEPLOY_TOKEN)<br/>image_source=registry, digest, upstream_sha"| gate
+    aprod -->|"gh api dispatches (token de reqsai-release-bot)<br/>image_source=registry, digest, upstream_sha"| gate
     arb -->|"digest del release anterior"| gate
     iprod -->|"workflow_call keep/keep"| gate
     irb -->|"workflow_call infra_ref=vX.Y.Z"| gate
@@ -893,9 +893,11 @@ app) es:
 2. `release.yml` ejecuta el CI, **construye una sola vez** la imagen `linux/arm64`, la publica como
    `ghcr.io/kntro-soft/reqsai-<app>:x.y.z-rc.N` (y `sha-<commit>`), crea el pre-release `vx.y.z-rc.N` con el digest
    y el hash del árbol, **verifica ese digest** en el runner (la API con el perfil `prod` contra PostgreSQL +
-   pgvector y un alta de punta a punta; el web con nginx) y abre o actualiza el PR `release: x.y.z` a `main`.
+   pgvector y un alta de punta a punta; el web con nginx) y abre o actualiza el PR `release: x.y.z` a `main` como
+   `reqsai-release-bot`.
 3. Al fusionar, `produccion.yml` busca la candidata por hash del árbol y su job `deploy` corre en el environment
-   `produccion` de la app: **ahí se aprueba**. Luego ejecuta (`.github/scripts/deploy-via-infra.sh`)
+   `produccion` de la app: **ahí se aprueba**. Luego ejecuta (`.github/scripts/deploy-via-infra.sh`, con un token
+   de la GitHub App `reqsai-release-bot` limitado a reqsai-infra)
 
    ```bash
    gh api --method POST repos/Kntro-Soft/reqsai-infra/actions/workflows/deploy-mvp.yml/dispatches \
@@ -907,8 +909,8 @@ app) es:
    despliega con el mecanismo de siempre (OIDC → `mvp` → SSH sobre SSM) y no pide otra aprobación, porque ve el
    deployment `in_progress` de la app para ese commit.
 4. Con el despliegue en verde, la app etiqueta el digest como `x.y.z` y `latest` en GHCR (sin recompilar), crea el
-   tag `vx.y.z` y su GitHub Release sobre el commit de `main` y abre el PR de vuelta a `develop`. Si el despliegue
-   falla no hay tag.
+   tag `vx.y.z` y su GitHub Release sobre el commit de `main` y abre el PR de vuelta a `develop` como
+   `reqsai-release-bot`, con auto-merge (merge commit) si el repo lo permite. Si el despliegue falla no hay tag.
 
 **Configuración única de GHCR** (Settings de cada paquete, no tiene API):
 
@@ -925,31 +927,24 @@ GHCR no tiene costo hoy para paquetes públicos ni para el almacenamiento y la t
 registry ([GitHub Packages billing](https://docs.github.com/en/billing/concepts/product-billing/github-packages)).
 La alternativa ECR se compara en [Registro de imágenes](#registro-de-imágenes-ghcr) y en 14.7.
 
-El `GITHUB_TOKEN` de un repo no puede disparar workflows en otro, así que hace falta un token propio guardado como
-secreto `INFRA_DEPLOY_TOKEN` en **cada** repo de app. Sin ese secreto el job `deploy` falla (una versión no se
-marca como desplegada si no llegó al host).
+El `GITHUB_TOKEN` de un repo no puede disparar workflows en otro, y un PR abierto con él no inicia workflows
+`pull_request` (su CI nunca reporta). Por eso los workflows de release de los cinco repos (reqsai-infra, reqsai-api,
+reqsai-web, reqsai-landing y reqsai-report) usan la GitHub App **`reqsai-release-bot`**:
 
-Crear el token (fine-grained PAT):
+- Instalada en todos los repos de Kntro-Soft con *Contents*, *Pull requests*, *Actions* y *Workflows*: lectura y
+  escritura.
+- Variable de organización `RELEASE_APP_ID` (el App ID) y secreto de organización `RELEASE_APP_PRIVATE_KEY` (su llave
+  privada), con visibilidad para todos los repos.
+- Cada job que la necesita genera un token de corta duración (`actions/create-github-app-token`, una hora) con solo
+  los permisos de ese job: el PR `release: x.y.z` (*Pull requests: write*), el PR de vuelta a `develop` (*Contents* y
+  *Pull requests: write*, para el auto-merge) y, en las apps, el `workflow_dispatch` de `deploy-mvp.yml` (token
+  limitado a `reqsai-infra` con *Actions: write*). La ejecución de reqsai-infra se sigue con el `GITHUB_TOKEN` de la
+  app (este repo es público), porque el despliegue puede durar más que el token.
+- Si falta la variable o el secreto, el job falla con *Release bot not configured*; nada vuelve al `GITHUB_TOKEN` ni a
+  un token personal.
 
-1. Si la organización exige aprobación o no permite fine-grained tokens: **Kntro-Soft → Settings → Personal access
-   tokens → Settings**, permitir fine-grained tokens.
-2. **GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new
-   token.**
-3. *Resource owner*: `Kntro-Soft`. *Expiration*: la más corta que estés dispuesto a rotar (por ejemplo 90 días);
-   anota la fecha.
-4. *Repository access*: **Only select repositories** → `Kntro-Soft/reqsai-infra`.
-5. *Permissions → Repository permissions*: **Actions: Read and write** (GitHub agrega *Metadata: Read-only*). Nada
-   más.
-6. Genera el token y guárdalo en los dos repos, de preferencia como secreto del environment `produccion` (solo un
-   job ya aprobado puede usarlo):
-
-```bash
-gh secret set INFRA_DEPLOY_TOKEN -R Kntro-Soft/reqsai-api --env produccion
-gh secret set INFRA_DEPLOY_TOKEN -R Kntro-Soft/reqsai-web --env produccion
-```
-
-Ese token solo puede lanzar, leer o cancelar workflows de reqsai-infra; los secretos del environment `mvp`, el rol
-de AWS y la llave SSH siguen fuera de su alcance, y solo `main` de reqsai-infra puede desplegar.
+El token personal `INFRA_DEPLOY_TOKEN` que usaban antes reqsai-api y reqsai-web ya no se usa; se puede borrar de los
+environments `produccion` de las dos apps cuando la siguiente release de cada una haya llegado a `main`.
 
 **Orden de adopción:** primero este cambio debe llegar a `main` de reqsai-infra (el modo `registry` por digest y
 `upstream_sha` no existen antes), después la configuración de GHCR y por último los workflows de las apps.
@@ -971,7 +966,8 @@ de AWS y la llave SSH siguen fuera de su alcance, y solo `main` de reqsai-infra 
 | `… says A.B.C but the branch is release/X.Y.Z` | Falta el commit `chore(release): X.Y.Z` | Actualiza `VERSION` (o el archivo de versión de la app) en la rama release |
 | La ejecución queda en *Waiting* | El job `approve` espera aprobación en `produccion` | Actions → la ejecución → **Review deployments** |
 | Todo termina en verde pero nada cambió en el host, y no hay tag | El interruptor `ENABLE_REQSAI_INFRA_DEPLOY` está apagado | El resumen del job `gate` y 14.8 |
-| El PR de release o de vuelta a `develop` no se abrió | *Allow GitHub Actions to create and approve pull requests* está apagado | El resumen trae el enlace para abrirlo a mano |
+| `Release bot not configured` | Falta la variable `RELEASE_APP_ID` o el secreto `RELEASE_APP_PRIVATE_KEY` de la organización | 14.5, GitHub App `reqsai-release-bot` |
+| El PR de release o de vuelta a `develop` no se abrió (`reqsai-release-bot could not open …`) | La App no está instalada en ese repo o le falta *Pull requests: write* | Kntro-Soft → Settings → GitHub Apps → `reqsai-release-bot` |
 
 ### 14.7 Entornos: qué existe y qué falta
 

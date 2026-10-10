@@ -159,14 +159,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write # marks the candidate verified; the pull request is opened by reqsai-release-bot
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - name: Mark the candidate as verified and open or update the release pull request
+      - name: Mark the candidate as verified and write the release pull request
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
@@ -190,5 +189,32 @@ jobs:
             echo "Merging into \`main\` runs **Produccion** (\`produccion.yml\`): it finds this candidate by tree hash, waits for approval in \`produccion\`, backs up the database and applies this configuration to the MVP host, then tags \`v$VERSION\` and opens the back-merge into \`develop\`."
             echo "A new push to \`$BRANCH\` builds the next candidate and updates this description."
           } > "$body"
-          url=$(.github/scripts/candidate.sh pr "$BRANCH" main "release: $VERSION" "$body")
+
+      - name: Check the release bot configuration
+        env:
+          APP_ID: ${{ vars.RELEASE_APP_ID }}
+          HAS_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: |
+          if [ -z "$APP_ID" ] || [ "$HAS_KEY" != true ]; then
+            echo "::error title=Release bot not configured::The organization variable RELEASE_APP_ID and the organization secret RELEASE_APP_PRIVATE_KEY (GitHub App reqsai-release-bot) are required to open the release pull request. Nothing falls back to GITHUB_TOKEN: its pull requests start no workflows."
+            exit 1
+          fi
+
+      - name: Mint the release bot token
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          # The App ID; GitHub accepts it as the JWT issuer like the client ID.
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: read # compares the branches
+          permission-pull-requests: write
+
+      - name: Open or update the release pull request as reqsai-release-bot
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          url=$(.github/scripts/candidate.sh pr "$BRANCH" main "release: $VERSION" "$RUNNER_TEMP/pr.md")
           echo "Release pull request: $url" >> "$GITHUB_STEP_SUMMARY"
