@@ -1,0 +1,178 @@
+name: Branch cleanup
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Log what would be deleted without deleting anything"
+        type: boolean
+        default: false
+
+jobs:
+  cleanup:
+    name: Delete stale/merged branches
+    runs-on: ubuntu-latest
+    if: vars.BRANCH_CLEANUP_ENABLED != 'false'
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      PROTECT_LABEL: do-not-delete
+      MERGED_GRACE_DAYS: 7
+      STALE_DAYS: 30
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Evaluate and delete stale branches
+        run: |
+          set -euo pipefail
+
+          OWNER="${REPO%%/*}"
+          NOW_EPOCH=$(date -u +%s)
+          deleted=0
+          kept=0
+
+          # origin/develop and origin/main are needed for the git-ancestry
+          # fallback below (only reached when a merged branch has no PR record
+          # at all).
+          git fetch origin develop main --quiet
+
+          {
+            echo "## Branch cleanup — $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "**DRY RUN** — no branches were actually deleted."
+              echo
+            fi
+            echo "Rules: delete a merged branch \`\${MERGED_GRACE_DAYS}\`+ days after it merged;"
+            echo "delete an unmerged branch after \`\${STALE_DAYS}\`+ days with no new commits;"
+            echo "never touch \`main\`, \`develop\`, \`release/**\`, \`hotfix/**\`, any branch with an"
+            echo "open PR, or any branch whose PR (open or closed) carries the"
+            echo "\`$PROTECT_LABEL\` label."
+            echo
+            echo "| Branch | Decision | Reason | Detail |"
+            echo "|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          row() {
+            echo "| \`$1\` | $2 | $3 | $4 |" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          delete_branch() {
+            local branch="$1"
+            if [ "$DRY_RUN" = "true" ]; then
+              return 0
+            fi
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$branch"
+          }
+
+          branches=$(gh api "repos/$REPO/branches" --paginate --jq '.[].name')
+
+          while IFS= read -r branch; do
+            [ -z "$branch" ] && continue
+
+            # Hard exemptions — policy, never automated, no opt-out.
+            case "$branch" in
+              main|develop)
+                row "$branch" "Kept" "Always exempt" "protected Gitflow base branch"
+                kept=$((kept + 1))
+                continue
+                ;;
+              release/*|hotfix/*)
+                row "$branch" "Kept" "Always exempt" "Gitflow release/hotfix branch"
+                kept=$((kept + 1))
+                continue
+                ;;
+            esac
+
+            # Pull this branch's full PR history (open + closed + merged) in one call.
+            prs_json=$(gh api "repos/$REPO/pulls" -f "head=$OWNER:$branch" -f state=all --jq '.' 2>/dev/null || echo '[]')
+
+            has_open=$(echo "$prs_json" | jq -r 'any(.[]; .state == "open")')
+            if [ "$has_open" = "true" ]; then
+              pr_num=$(echo "$prs_json" | jq -r '[.[] | select(.state == "open")][0].number')
+              row "$branch" "Kept" "Open PR" "PR #$pr_num is open"
+              kept=$((kept + 1))
+              continue
+            fi
+
+            has_protect_label=$(echo "$prs_json" | jq -r --arg L "$PROTECT_LABEL" \
+              'any(.[]; (.labels // []) | any(.name == $L))')
+            if [ "$has_protect_label" = "true" ]; then
+              pr_num=$(echo "$prs_json" | jq -r --arg L "$PROTECT_LABEL" \
+                '[.[] | select((.labels // []) | any(.name == $L))][0].number')
+              row "$branch" "Kept" "Protected label" "PR #$pr_num carries \`$PROTECT_LABEL\`"
+              kept=$((kept + 1))
+              continue
+            fi
+
+            # Merge status comes from PR data first — this is correct for
+            # squash and rebase merges, which rewrite commit SHAs and break
+            # git ancestry. git ancestry is only a fallback for a merge with
+            # no PR record, and only detects a true merge-commit merge.
+            merged_at=$(echo "$prs_json" | jq -r \
+              'map(select(.merged_at != null)) | sort_by(.merged_at) | last | .merged_at // empty')
+            merge_source="PR merged_at"
+
+            if [ -z "$merged_at" ]; then
+              git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch" --quiet 2>/dev/null || true
+              if git rev-parse --verify -q "refs/remotes/origin/$branch" >/dev/null 2>&1; then
+                if git merge-base --is-ancestor "refs/remotes/origin/$branch" origin/develop 2>/dev/null \
+                  || git merge-base --is-ancestor "refs/remotes/origin/$branch" origin/main 2>/dev/null; then
+                  merged_at=$(git log -1 --format=%cI "refs/remotes/origin/$branch")
+                  merge_source="git-ancestry fallback (merge-commit only, no PR record found)"
+                fi
+              fi
+            fi
+
+            if [ -n "$merged_at" ]; then
+              merged_epoch=$(date -u -d "$merged_at" +%s)
+              age_days=$(( (NOW_EPOCH - merged_epoch) / 86400 ))
+              if [ "$age_days" -ge "$MERGED_GRACE_DAYS" ]; then
+                delete_branch "$branch"
+                decision="Deleted"
+                [ "$DRY_RUN" = "true" ] && decision="Would delete (dry-run)"
+                row "$branch" "$decision" "Merged ${age_days}d ago (>= ${MERGED_GRACE_DAYS}d grace)" "$merge_source=$merged_at"
+                deleted=$((deleted + 1))
+              else
+                row "$branch" "Kept" "Merged ${age_days}d ago (< ${MERGED_GRACE_DAYS}d grace)" "$merge_source=$merged_at"
+                kept=$((kept + 1))
+              fi
+              continue
+            fi
+
+            # Not merged — evaluate the 30-day-no-activity rule.
+            last_commit_iso=$(gh api "repos/$REPO/branches/$branch" --jq '.commit.commit.committer.date')
+            last_commit_epoch=$(date -u -d "$last_commit_iso" +%s)
+            age_days=$(( (NOW_EPOCH - last_commit_epoch) / 86400 ))
+            if [ "$age_days" -ge "$STALE_DAYS" ]; then
+              delete_branch "$branch"
+              decision="Deleted"
+              [ "$DRY_RUN" = "true" ] && decision="Would delete (dry-run)"
+              row "$branch" "$decision" "No new commits in ${age_days}d (>= ${STALE_DAYS}d), not merged" "last_commit=$last_commit_iso"
+              deleted=$((deleted + 1))
+            else
+              row "$branch" "Kept" "Active" "last_commit=$last_commit_iso (${age_days}d ago)"
+              kept=$((kept + 1))
+            fi
+          done <<< "$branches"
+
+          {
+            echo
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "**Summary (dry run)**: $deleted would be deleted, $kept kept."
+            else
+              echo "**Summary**: $deleted deleted, $kept kept."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

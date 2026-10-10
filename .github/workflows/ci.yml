@@ -1,0 +1,46 @@
+name: CI
+
+# Pull requests, and pushes to the Gitflow branches: a release pull request opened by a workflow (GITHUB_TOKEN)
+# starts no pull_request run, so the checks of its head commit come from the push to release/** or hotfix/**.
+# release.yml reuses it (workflow_call) before it builds a candidate.
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop, 'release/**', 'hotfix/**']
+  workflow_call:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ANSIBLE_CORE_VERSION: 2.21.5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Lint the workflows (actionlint + shellcheck)
+        run: docker run --rm --volume "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
+
+      - name: Lint the shell scripts
+        run: find scripts .github/scripts -name "*.sh" -exec shellcheck {} +
+
+      - name: Check the Terraform formatting
+        run: docker run --rm --volume "$PWD:/repo" --workdir /repo hashicorp/terraform:1.16.5 fmt -check -recursive -diff
+
+      - name: Check the Ansible playbook syntax
+        working-directory: ansible
+        run: |
+          pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
+          ansible-galaxy collection install -r requirements.yml
+          ansible-playbook site.yml --syntax-check --inventory localhost,
