@@ -18,7 +18,12 @@
 #   candidate.sh fetch <tag> <dir>                 download the assets of a release and check their SHA-256
 #   candidate.sh final <candidate.json> <commit> [asset..]   publish vX.Y.Z on the main commit
 #   candidate.sh pr <head> <base> <title> <body-file>        open or update a pull request
+#   candidate.sh automerge <pr-url>                turn on auto-merge (merge commit) when the repository allows it
 #   candidate.sh notes <candidate.json>            print the release notes of a candidate
+#
+# pr and automerge run with a token of the GitHub App reqsai-release-bot (organization variable RELEASE_APP_ID,
+# secret RELEASE_APP_PRIVATE_KEY): a pull request opened with GITHUB_TOKEN starts no pull_request workflows, so
+# its CI would never report. Every other command runs with the workflow's GITHUB_TOKEN.
 set -euo pipefail
 
 repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is not set}"
@@ -231,13 +236,20 @@ cmd_pr() {
     echo "$server/$repo/pull/$number"
     return
   fi
-  if url=$(gh pr create --repo "$repo" --head "$head" --base "$base" --title "$title" --body-file "$body" 2>/dev/null); then
-    echo "$url"
+  if ! url=$(gh pr create --repo "$repo" --head "$head" --base "$base" --title "$title" --body-file "$body"); then
+    die "reqsai-release-bot could not open $head → $base. Check that the GitHub App is installed on $repo with Pull requests: read and write."
+  fi
+  echo "$url"
+}
+
+cmd_automerge() {
+  local url="${1:?pull request URL}"
+  if gh pr merge "$url" --repo "$repo" --auto --merge >/dev/null 2>&1; then
+    echo "auto-merge on: it merges itself, with a merge commit, once approved and green"
     return
   fi
-  url="$server/$repo/compare/$base...$head?expand=1"
-  echo "::warning title=Open the pull request by hand::GitHub Actions may not create pull requests in this organization (Settings → Actions → General → Allow GitHub Actions to create and approve pull requests). Open it: $url with the title '$title'." >&2
-  echo "$url"
+  echo "::warning title=Auto-merge not available::Auto-merge could not be turned on for $url (Settings → General → Allow auto-merge is off, or the pull request is already mergeable). Merge it by hand with a merge commit." >&2
+  echo "merge it by hand, with a merge commit"
 }
 
 command="${1:-}"
@@ -252,6 +264,7 @@ case "$command" in
   fetch) cmd_fetch "$@" ;;
   final) cmd_final "$@" ;;
   pr) cmd_pr "$@" ;;
+  automerge) cmd_automerge "$@" ;;
   notes) cmd_notes "$@" ;;
-  *) die "Unknown command '$command' (branch, version, next, create, mark, find, fetch, final, pr, notes)" ;;
+  *) die "Unknown command '$command' (branch, version, next, create, mark, find, fetch, final, pr, automerge, notes)" ;;
 esac
