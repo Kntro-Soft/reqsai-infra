@@ -186,6 +186,11 @@ cmd_final() {
   jq --arg commit "$commit" --arg run "$server/$repo/actions/runs/${GITHUB_RUN_ID:-0}" \
     '. + {released_commit: $commit, released_by: $run}' "$json" >"$dir/candidate.json"
   section=$(changelog_section "$version")
+  # GitHub refuses release notes over 125000 characters (reqsai-api 1.2.0 carried its whole history).
+  if ((${#section} > 100000)); then
+    section="${section:0:100000}"
+    section="${section%$'\n'*}"$'\n\n'"…truncated: the full list is in [CHANGELOG.md]($server/$repo/blob/$commit/CHANGELOG.md)."
+  fi
   {
     echo "Promoted to production from candidate **$(jq -r .candidate "$json")** without rebuilding."
     echo
