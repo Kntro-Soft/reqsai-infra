@@ -24,3 +24,9 @@ vault_stripe_webhook_secret: ""
 vault_jira_oauth_client_id: ""
 vault_jira_oauth_client_secret: ""
 vault_jira_oauth_state_secret: ""
+
+vault_github_app_slug:
+vault_github_app_client_id:
+vault_github_app_client_secret:
+vault_github_app_private_key_b64:
+vault_github_app_webhook_secret:
