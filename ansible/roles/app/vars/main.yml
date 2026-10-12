@@ -57,5 +57,10 @@ app_api_env_core:
   JIRA_OAUTH_CLIENT_ID: "{{ vault_jira_oauth_client_id | default('') }}"
   JIRA_OAUTH_CLIENT_SECRET: "{{ vault_jira_oauth_client_secret | default('') }}"
   JIRA_OAUTH_STATE_SECRET: "{{ vault_jira_oauth_state_secret | default('') }}"
+  CODEBASE_GITHUB_APP_SLUG: "{{ vault_github_app_slug | default('') }}"
+  CODEBASE_GITHUB_APP_CLIENT_ID: "{{ vault_github_app_client_id | default('') }}"
+  CODEBASE_GITHUB_APP_CLIENT_SECRET: "{{ vault_github_app_client_secret | default('') }}"
+  CODEBASE_GITHUB_APP_PRIVATE_KEY: "{{ vault_github_app_private_key_b64 | default('') }}"
+  CODEBASE_GITHUB_APP_WEBHOOK_SECRET: "{{ vault_github_app_webhook_secret | default('') }}"
 
 app_api_env: "{{ app_api_env_core | combine(app_api_settings) }}"

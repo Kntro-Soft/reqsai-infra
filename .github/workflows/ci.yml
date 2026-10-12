@@ -1,8 +1,8 @@
 name: CI
 
-# Pull requests, and pushes to the Gitflow branches: a release pull request opened by a workflow (GITHUB_TOKEN)
-# starts no pull_request run, so the checks of its head commit come from the push to release/** or hotfix/**.
-# release.yml reuses it (workflow_call) before it builds a candidate.
+# Pull requests, and pushes to the Gitflow branches: the release pull request is opened by the GitHub App
+# reqsai-release-bot, so it gets its own pull_request run, and the push to release/** or hotfix/** checks the same
+# head commit. release.yml reuses it (workflow_call) before it builds a candidate.
 
 on:
   pull_request:
