@@ -373,7 +373,34 @@ Qué va en cada clave del vault:
 | `vault_deepgram_api_key`, `vault_openai_api_key` | solo si se cambian los proveedores (ver abajo) |
 | `vault_mail_username`, `vault_mail_password` | SMTP (Gmail + App Password); `MAIL_FROM` toma el usuario salvo que definas `app_mail_from` |
 | `vault_stripe_*`, `vault_jira_oauth_client_*` | opcionales |
+| `vault_github_app_*` | opcionales: la GitHub App de ReqsAI (ver "GitHub App" abajo) |
 | `vault_git_token` | solo para la compilación en el host (sección 7.3) |
+
+#### GitHub App
+
+Con las cinco claves `vault_github_app_*` el API deja a cada organización conectar GitHub (instalación con permiso de
+solo lectura sobre los repositorios que elija) y reindexa un repositorio en cada push. Sin ellas, solo se pueden
+leer repositorios públicos y la pantalla de Integraciones dice que GitHub no está configurado.
+
+La App se crea una vez en **Kntro-Soft → Settings → Developer settings → GitHub Apps** (detalle en `docs/CODE_COPILOT.md` de
+`reqsai-api`):
+
+| Campo de GitHub | Valor |
+| --- | --- |
+| Homepage URL | `https://reqsai.tech` |
+| Callback URL (con "Request user authorization (OAuth) during installation") | `https://reqsai.tech/settings/integrations/github/callback` |
+| Webhook URL (activo, `application/json`) | `https://reqsai.tech/api/code/webhooks/github` |
+| Repository permissions | Contents: Read-only; Metadata: Read-only |
+| Subscribe to events | Push |
+| Where can it be installed | Any account |
+
+| Clave del vault | Valor |
+| --- | --- |
+| `vault_github_app_slug` | lo que sigue a `github.com/apps/` |
+| `vault_github_app_client_id` | Client ID (`Iv…`) |
+| `vault_github_app_client_secret` | client secret generado en la App |
+| `vault_github_app_private_key_b64` | el `.pem` de la App en una sola línea: `base64 < app.pem \| tr -d '\n'` |
+| `vault_github_app_webhook_secret` | el mismo secreto que se escribió en el webhook de la App |
 
 Ningún valor puede contener comillas simples ni saltos de línea (los PEM se aplanan automáticamente); Ansible lo
 valida antes de escribir los archivos.
