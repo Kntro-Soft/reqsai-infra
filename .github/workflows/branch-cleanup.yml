@@ -96,8 +96,15 @@ jobs:
                 ;;
             esac
 
-            # Pull this branch's full PR history (open + closed + merged) in one call.
-            prs_json=$(gh api "repos/$REPO/pulls" -f "head=$OWNER:$branch" -f state=all --jq '.' 2>/dev/null || echo '[]')
+            # Pull this branch's full PR history (open + closed + merged) in one call. --method GET is
+            # required: gh api sends -f fields as a POST body unless told otherwise, which would hit the
+            # create-a-pull-request endpoint instead of listing. When the lookup fails the branch is left
+            # alone: without its PRs the open-PR and protect-label rules cannot be checked.
+            if ! prs_json=$(gh api --method GET "repos/$REPO/pulls" -f "head=$OWNER:$branch" -f state=all -f per_page=100 2>/dev/null); then
+              row "$branch" "Kept" "PR lookup failed" "left alone: its PRs could not be read"
+              kept=$((kept + 1))
+              continue
+            fi
 
             has_open=$(echo "$prs_json" | jq -r 'any(.[]; .state == "open")')
             if [ "$has_open" = "true" ]; then
