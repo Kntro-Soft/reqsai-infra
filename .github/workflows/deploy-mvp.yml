@@ -327,10 +327,16 @@ jobs:
         run: |
           ip=$(curl -fsS --max-time 10 https://api.ipify.org)
           [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Could not read the runner's public IPv4 address"; exit 1; }
-          az network nsg rule create --resource-group "$RESOURCE_GROUP" --nsg-name "$NSG" --name "$RULE" \
-            --priority 300 --direction Inbound --access Allow --protocol Tcp \
-            --source-address-prefixes "$ip/32" --destination-port-ranges 22 \
-            --description "SSH for deploy run $GITHUB_RUN_ID" --output none
+          # The Azure CLI sometimes dies on a Python import race on the runner ("deadlock detected by _ModuleLock"):
+          # the rule is created again, which is harmless if the first try went through.
+          for attempt in 1 2 3; do
+            az network nsg rule create --resource-group "$RESOURCE_GROUP" --nsg-name "$NSG" --name "$RULE" \
+              --priority 300 --direction Inbound --access Allow --protocol Tcp \
+              --source-address-prefixes "$ip/32" --destination-port-ranges 22 \
+              --description "SSH for deploy run $GITHUB_RUN_ID" --output none && break
+            [ "$attempt" = 3 ] && { echo "::error::Could not open SSH to the runner"; exit 1; }
+            sleep 5
+          done
           echo "NSG_RULE=$RULE" >> "$GITHUB_ENV"
           echo "SSH open to the runner ($ip) for this run." >> "$GITHUB_STEP_SUMMARY"
 
@@ -410,7 +416,13 @@ jobs:
         env:
           RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
           NSG: ${{ vars.AZURE_NSG_NAME }}
-        run: az network nsg rule delete --resource-group "$RESOURCE_GROUP" --nsg-name "$NSG" --name "$NSG_RULE" --output none
+        run: |
+          for _ in 1 2 3; do
+            az network nsg rule delete --resource-group "$RESOURCE_GROUP" --nsg-name "$NSG" --name "$NSG_RULE" --output none && exit 0
+            sleep 5
+          done
+          echo "::error::Could not close the SSH rule $NSG_RULE; delete it by hand"
+          exit 1
 
       - name: Remove the deploy credentials
         if: always()
