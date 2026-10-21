@@ -14,13 +14,13 @@ resource "azurerm_subnet" "app" {
 }
 
 locals {
-  # Caddy on 80/TCP (ACME HTTP-01 and the redirect), 443/TCP and 443/UDP (HTTP/3). SSH on 22 for the
-  # GitHub-hosted deploy runners (keys only, their addresses change), and on admin_ssh_port for the operator.
+  # Caddy on 80/TCP (ACME HTTP-01 and the redirect), 443/TCP and 443/UDP (HTTP/3), and SSH on admin_ssh_port
+  # for the operator. SSH on 22 is not open: each deploy run adds a rule for its runner's address and removes it
+  # (deploy-mvp.yml, with the identity of github-deploy.tf).
   inbound_rules = {
     http      = { priority = 100, protocol = "Tcp", port = "80", sources = ["0.0.0.0/0"] }
     https     = { priority = 110, protocol = "Tcp", port = "443", sources = ["0.0.0.0/0"] }
     http3     = { priority = 120, protocol = "Udp", port = "443", sources = ["0.0.0.0/0"] }
-    ssh       = { priority = 130, protocol = "Tcp", port = "22", sources = ["0.0.0.0/0"] }
     admin_ssh = { priority = 140, protocol = "Tcp", port = tostring(var.admin_ssh_port), sources = var.admin_cidrs }
   }
 }

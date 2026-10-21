@@ -76,3 +76,21 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "github_owner" {
+  description = "GitHub organization of the repository whose deploy jobs may use the Azure identity."
+  type        = string
+  default     = "Kntro-Soft"
+}
+
+variable "github_repository_name" {
+  description = "Repository whose deploy jobs may use the Azure identity."
+  type        = string
+  default     = "reqsai-infra"
+}
+
+variable "github_environment" {
+  description = "GitHub environment of those deploy jobs (the OIDC subject is repo:<owner>/<repo>:environment:<this>)."
+  type        = string
+  default     = "mvp"
+}
