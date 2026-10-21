@@ -1,0 +1,17 @@
+#cloud-config
+# Only what Ansible needs to take over: python3, the deploy key and the operator's second SSH port.
+package_update: true
+packages:
+  - python3
+ssh_authorized_keys:
+  - ${deploy_ssh_public_key} reqsai-mvp-github-deploy
+write_files:
+  - path: /etc/ssh/sshd_config.d/10-reqsai-ports.conf
+    content: |
+      Port 22
+      Port ${admin_ssh_port}
+      PasswordAuthentication no
+runcmd:
+  - systemctl disable --now ssh.socket || true
+  - systemctl enable --now ssh.service
+  - systemctl restart ssh.service

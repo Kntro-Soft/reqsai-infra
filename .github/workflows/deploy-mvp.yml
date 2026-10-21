@@ -1,7 +1,7 @@
 name: Deploy MVP
 run-name: Deploy MVP · ${{ inputs.request_id || github.event.client_payload.request_id || github.event_name }}
 
-# The only workflow that reaches the MVP host (AWS EC2, GitHub OIDC → environment mvp → SSH over SSM).
+# The only workflow that reaches the MVP host (Azure VM, environment mvp → SSH with the deploy key to DEPLOY_HOST).
 #   - produccion.yml / rollback.yml of this repository call it (configuration of a release, keep/keep).
 #   - produccion.yml / rollback.yml of reqsai-api and reqsai-web dispatch it with image_source=registry and the
 #     digest of an approved release candidate; their produccion approval is reused (upstream_sha).
@@ -289,14 +289,11 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      id-token: write
     outputs:
       deployed: ${{ steps.health.outputs.deployed }}
     env:
       ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
       ANSIBLE_CORE_VERSION: 2.21.5
-      SSM_PLUGIN_VERSION: 1.2.835.0
-      SSM_PLUGIN_SHA256: 7c6dcad12518571cc7959a713e6a8ae1bdf6ed66fd9bee37dc189e39ca58ae03
     steps:
       - name: Check out reqsai-infra
         uses: actions/checkout@v7
@@ -312,22 +309,6 @@ jobs:
           path: ${{ runner.temp }}/images
           merge-multiple: true
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: reqsai-mvp-deploy-${{ github.run_id }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Install the Session Manager plugin
-        run: |
-          deb="$RUNNER_TEMP/session-manager-plugin.deb"
-          curl -fsSL -o "$deb" \
-            "https://s3.amazonaws.com/session-manager-downloads/plugin/$SSM_PLUGIN_VERSION/ubuntu_64bit/session-manager-plugin.deb"
-          echo "$SSM_PLUGIN_SHA256  $deb" | sha256sum --check --strict
-          sudo dpkg -i "$deb"
-          session-manager-plugin --version
-
       - name: Install Ansible
         run: |
           pipx install "ansible-core==$ANSIBLE_CORE_VERSION"
@@ -339,9 +320,12 @@ jobs:
           ANSIBLE_VAULT_B64: ${{ secrets.ANSIBLE_VAULT_B64 }}
           ANSIBLE_EXTRA_VARS_B64: ${{ secrets.ANSIBLE_EXTRA_VARS_B64 }}
           DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
-          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
-          REGION: ${{ vars.AWS_REGION }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
         run: |
+          if [ -z "$DEPLOY_HOST" ]; then
+            echo "::error title=No deploy host::Set the variable DEPLOY_HOST of the environment mvp (public IP of the Azure VM, terraform output public_ip in envs/azure-vm)."
+            exit 1
+          fi
           umask 077
           dir="$RUNNER_TEMP/deploy"
           mkdir -p "$dir"
@@ -355,13 +339,10 @@ jobs:
               reqsai:
                 hosts:
                   reqsai-mvp:
-                    ansible_host: $INSTANCE_ID
+                    ansible_host: $DEPLOY_HOST
                     ansible_user: ubuntu
                     ansible_ssh_private_key_file: $dir/id_deploy
-                    ansible_ssh_common_args: >-
-                      -o IdentitiesOnly=yes
-                      -o ProxyCommand="aws ssm start-session --region $REGION --target %h --document-name AWS-StartSSHSession --parameters portNumber=%p"
-                    aws_region: $REGION
+                    ansible_ssh_common_args: -o IdentitiesOnly=yes
           EOF
           echo "DEPLOY_DIR=$dir" >> "$GITHUB_ENV"
 

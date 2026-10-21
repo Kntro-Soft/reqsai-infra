@@ -1,0 +1,7 @@
+subscription_id       = "00000000-0000-0000-0000-000000000000"
+location              = "northcentralus"
+vm_size               = "Standard_B2pls_v2"
+admin_cidrs           = ["203.0.113.10/32"]
+admin_ssh_public_key  = "ssh-ed25519 AAAA... operator"
+deploy_ssh_public_key = "ssh-ed25519 AAAA..."
+app_hostname          = ""
