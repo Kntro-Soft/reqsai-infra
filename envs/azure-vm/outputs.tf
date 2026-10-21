@@ -32,3 +32,14 @@ output "ansible_inventory" {
     app_hostname = local.app_hostname
   })
 }
+
+output "github_deploy" {
+  description = "Variables of the GitHub environment mvp for the OIDC login of deploy-mvp.yml (none of them is a secret)."
+  value = {
+    AZURE_CLIENT_ID       = azurerm_user_assigned_identity.github_deploy.client_id
+    AZURE_TENANT_ID       = azurerm_user_assigned_identity.github_deploy.tenant_id
+    AZURE_SUBSCRIPTION_ID = var.subscription_id
+    AZURE_RESOURCE_GROUP  = azurerm_resource_group.this.name
+    AZURE_NSG_NAME        = azurerm_network_security_group.app.name
+  }
+}

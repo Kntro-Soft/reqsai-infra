@@ -1,7 +1,8 @@
 name: Deploy MVP
 run-name: Deploy MVP · ${{ inputs.request_id || github.event.client_payload.request_id || github.event_name }}
 
-# The only workflow that reaches the MVP host (Azure VM, environment mvp → SSH with the deploy key to DEPLOY_HOST).
+# The only workflow that reaches the MVP host (Azure VM): environment mvp → OIDC login to Azure → SSH (22, opened to
+# this runner only for the run) with the deploy key to DEPLOY_HOST.
 #   - produccion.yml / rollback.yml of this repository call it (configuration of a release, keep/keep).
 #   - produccion.yml / rollback.yml of reqsai-api and reqsai-web dispatch it with image_source=registry and the
 #     digest of an approved release candidate; their produccion approval is reused (upstream_sha).
@@ -289,6 +290,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      id-token: write # OIDC login to Azure (envs/azure-vm/github-deploy.tf)
     outputs:
       deployed: ${{ steps.health.outputs.deployed }}
     env:
@@ -308,6 +310,29 @@ jobs:
           pattern: image-*
           path: ${{ runner.temp }}/images
           merge-multiple: true
+
+      - name: Log in to Azure with OIDC
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # The NSG keeps SSH (22) closed: this run opens it to its own address only, and the last step closes it.
+      - name: Open SSH to this runner
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          NSG: ${{ vars.AZURE_NSG_NAME }}
+          RULE: deploy-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          ip=$(curl -fsS --max-time 10 https://api.ipify.org)
+          [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Could not read the runner's public IPv4 address"; exit 1; }
+          az network nsg rule create --resource-group "$RESOURCE_GROUP" --nsg-name "$NSG" --name "$RULE" \
+            --priority 300 --direction Inbound --access Allow --protocol Tcp \
+            --source-address-prefixes "$ip/32" --destination-port-ranges 22 \
+            --description "SSH for deploy run $GITHUB_RUN_ID" --output none
+          echo "NSG_RULE=$RULE" >> "$GITHUB_ENV"
+          echo "SSH open to the runner ($ip) for this run." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install Ansible
         run: |
@@ -379,6 +404,13 @@ jobs:
           done
           echo "::error::$APP_URL/actuator/health did not report UP"
           exit 1
+
+      - name: Close SSH to this runner
+        if: always() && env.NSG_RULE != ''
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          NSG: ${{ vars.AZURE_NSG_NAME }}
+        run: az network nsg rule delete --resource-group "$RESOURCE_GROUP" --nsg-name "$NSG" --name "$NSG_RULE" --output none
 
       - name: Remove the deploy credentials
         if: always()
